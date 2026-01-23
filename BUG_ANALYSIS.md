@@ -183,6 +183,42 @@ valgrind --tool=memcheck opencode 2>&1 | head -50
 # Compare bundle structure
 ```
 
+### Step 11: Test Installation Method Differences
+```bash
+# Test with AUR binary specifically
+PATH=/usr/bin:$PATH opencode
+
+# Test with install script binary
+~/.opencode/bin/opencode
+
+# Check if they use different Bun versions
+/usr/bin/opencode 2>&1 | grep "Bun v"
+~/.opencode/bin/opencode 2>&1 | grep "Bun v"
+
+# Check plugin directory locations
+ls -la ~/.config/opencode/plugin/     # Singular (backwards compat)
+ls -la ~/.config/opencode/plugins/    # Plural (recommended)
+```
+
+### Step 12: Test Plugin Directory Location
+```bash
+# Move plugin to plural directory
+mkdir -p ~/.config/opencode/plugins/
+mv ~/.config/opencode/plugin/cursor-acp.js ~/.config/opencode/plugins/
+# Test if this helps
+```
+
+### Step 13: Check Node Modules Resolution
+```bash
+# Check which node_modules opencode uses for plugin dependencies
+# ~/.cache/opencode/node_modules/ (npm plugins)
+# ~/.opencode/node_modules/ (local deps)
+# ~/.config/opencode/node_modules/ (config deps)
+
+# Test if ACP SDK needs to be in a specific location
+find ~/.cache/opencode/node_modules -name "@agentclientprotocol" -type d
+```
+
 ## Most Likely Root Cause
 
 **Bun's module loader has a bug when parsing/loading large bundled JavaScript files (480KB+).**
