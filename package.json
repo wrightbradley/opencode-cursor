@@ -17,6 +17,7 @@
     "dist"
   ],
   "dependencies": {
+    "@agentclientprotocol/sdk": "^0.13.1",
     "@opencode-ai/plugin": "latest"
   },
   "devDependencies": {
