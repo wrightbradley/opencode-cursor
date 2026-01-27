@@ -1,36 +1,56 @@
-import { AgentSideConnection, ndJsonStream } from "@agentclientprotocol/sdk";
 import type { Plugin, Hooks } from "@opencode-ai/plugin";
-import { CursorAcpHybridAgent } from "./acp/agent.js";
-import { CursorNativeWrapper } from "./acp/cursor.js";
 
-export function runAcp() {
-  const input = process.stdin as any;
-  const output = process.stdout as any;
-  const stream = ndJsonStream(input, output);
-  new AgentSideConnection((client: any) => CursorAcpHybridAgent(client), stream);
+const LOG_PREFIX = "[cursor-acp]";
 
-  process.stdin.resume();
+function log(level: 'log' | 'error' | 'warn' | 'info' | 'debug', ...args: unknown[]) {
+  const message = args.map(arg =>
+    typeof arg === 'string' ? arg : JSON.stringify(arg)
+  ).join(' ');
+  console[level](`${LOG_PREFIX}`, message);
 }
 
-// OpenCode plugin format
-// Based on working plugins like opencode-notifier and opencode-gemini-auth
-// Plugins export both named and default exports
-export const CursorAcpPlugin: Plugin = async (input) => {
-  // This plugin runs ACP via stdin/stdout, so we don't need traditional OpenCode hooks
-  // But we must return a hooks object to satisfy the plugin interface
-  // Always return hooks object - opencode expects this to never be undefined
+const CursorAcpPlugin: Plugin = async (input) => {
+  log('info', 'Plugin loaded');
+
   const hooks: Hooks = {
-    // Optional config hook - called when config is loaded/updated
     config: async (config) => {
-      // No-op for now, but can be extended if needed
-      // This hook is called by opencode to allow plugins to modify config
+      try {
+        log('debug', 'Config hook called');
+      } catch (error) {
+        log('error', 'Config hook error:', error);
+      }
+    },
+    auth: {
+      provider: "cursor-acp",
+      loader: async (getAuth, provider) => {
+        try {
+          log('debug', 'Auth loader called for provider:', provider);
+
+          const auth = {
+            apiKey: "cursor-acp-no-auth-required",
+            baseURL: "http://127.0.0.1:32123/v1"
+          };
+
+          log('debug', 'Returning auth config');
+          return auth;
+        } catch (error) {
+          log('error', 'Auth loader error:', error);
+          return {
+            apiKey: "",
+            baseURL: "http://127.0.0.1:32123/v1"
+          };
+        }
+      },
+      methods: [{
+        type: "api",
+        label: "Cursor Agent ACP through stdin/stdout"
+      }]
     }
   };
-  
+
+  log('info', 'Plugin hooks registered');
   return hooks;
 };
 
-// Also export as default for compatibility (like opencode-notifier does)
+export { CursorAcpPlugin };
 export default CursorAcpPlugin;
-
-export { CursorAcpHybridAgent, CursorNativeWrapper };

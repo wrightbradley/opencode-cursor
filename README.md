@@ -39,6 +39,21 @@ Add to `~/.config/opencode/opencode.json`:
 
 **Note**: The plugin externalizes ACP SDK to avoid Bun's segfault bug with large bundles. ACP SDK is installed to `~/.config/opencode/node_modules/`.
 
+**Rollback / Uninstall**:
+
+To remove the plugin and all changes made by the installer:
+
+```bash
+cd /path/to/opencode-cursor
+./installer --uninstall
+```
+
+This removes:
+- Plugin symlink (`~/.config/opencode/plugin/cursor-acp.js`)
+- ACP SDK from `~/.config/opencode/node_modules/`
+- Provider config from `~/.config/opencode/opencode.json`
+- Old `opencode-cursor-auth` plugin reference
+
 ## Usage
 
 Select `cursor-acp/auto` as your model in OpenCode.

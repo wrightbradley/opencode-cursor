@@ -247,20 +247,20 @@ func verifyPostInstall(m *model) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, "opencode", "models", "--provider")
+	cmd := exec.CommandContext(ctx, "opencode", "models")
 	output, err := cmd.CombinedOutput()
 
 	cancel()
 
 	if err != nil {
-		return fmt.Errorf("failed to run opencode models: %w", err)
+		return fmt.Errorf("failed to run opencode models: %w. Output: %s", err, string(output))
 	}
 
 	if strings.Contains(string(output), "cursor-acp") {
 		return nil
 	}
 
-	return fmt.Errorf("cursor-acp provider not found - plugin may not be installed correctly")
+	return fmt.Errorf("cursor-acp provider not found - plugin may not be installed correctly. OpenCode output: %s", string(output))
 }
 
 // Uninstall functions
@@ -270,6 +270,7 @@ func (m model) startUninstallation() (tea.Model, tea.Cmd) {
 
 	m.tasks = []installTask{
 		{name: "Remove plugin symlink", description: "Removing cursor-acp.js from plugin directory", execute: removeSymlink, status: statusPending},
+		{name: "Remove ACP SDK", description: "Removing @agentclientprotocol/sdk from opencode", execute: removeAcpSdk, status: statusPending},
 		{name: "Remove provider config", description: "Removing cursor-acp from opencode.json", execute: removeProviderConfig, status: statusPending},
 		{name: "Remove old plugin", description: "Removing opencode-cursor-auth if present", execute: removeOldPlugin, status: statusPending},
 		{name: "Validate config", description: "Checking JSON syntax", execute: validateConfigAfterUninstall, status: statusPending},
@@ -292,6 +293,22 @@ func removeSymlink(m *model) error {
 	// Remove symlink
 	if err := os.Remove(symlinkPath); err != nil {
 		return fmt.Errorf("failed to remove symlink: %w", err)
+	}
+
+	return nil
+}
+
+func removeAcpSdk(m *model) error {
+	configDir, _ := getConfigDir()
+	opencodeNodeModules := filepath.Join(configDir, "opencode", "node_modules", "@agentclientprotocol")
+
+	acpPath := filepath.Join(opencodeNodeModules, "sdk")
+	if _, err := os.Stat(acpPath); os.IsNotExist(err) {
+		return nil
+	}
+
+	if err := os.RemoveAll(opencodeNodeModules); err != nil {
+		return fmt.Errorf("failed to remove ACP SDK: %w", err)
 	}
 
 	return nil
