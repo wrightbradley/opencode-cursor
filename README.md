@@ -11,10 +11,11 @@ curl -fsSL https://raw.githubusercontent.com/nomadcxx/opencode-cursor/main/insta
 ```
 
 The installer automatically:
+- Installs to `~/.local/share/opencode-cursor` (permanent location for uninstall)
 - Checks prerequisites (bun, cursor-agent, OpenCode)
 - Builds the plugin
 - Installs ACP SDK to `~/.config/opencode/node_modules/` (externalized to avoid Bun segfault)
-- Creates plugin symlink
+- Creates plugin symlink to `~/.config/opencode/plugin/cursor-acp.js`
 - Adds cursor-acp provider with 30 Cursor models
 - **Creates backups** before each operation
 - **Auto-rollback** if any step fails
@@ -77,8 +78,16 @@ The cursor-acp provider includes 30 Cursor Agent models:
 
 **Uninstall / Rollback**:
 
-From installed repo directory:
+The installer installs to `~/.local/share/opencode-cursor` for permanent access. To uninstall:
+
 ```bash
+cd ~/.local/share/opencode-cursor
+./installer --uninstall
+```
+
+If running from a downloaded copy:
+```bash
+cd /path/to/opencode-cursor
 ./installer --uninstall
 ```
 
