@@ -63,169 +63,67 @@ func checkPrerequisites(m *model) error {
 	return nil
 }
 
-func buildPlugin(m *model) error {
-	// Run bun install
-	installCmd := exec.Command("bun", "install")
-	installCmd.Dir = m.projectDir
-	if err := runCommand("bun install", installCmd, m.logFile); err != nil {
-		return fmt.Errorf("bun install failed")
-	}
-
-	// Run bun run build
-	buildCmd := exec.Command("bun", "run", "build")
-	buildCmd.Dir = m.projectDir
-	if err := runCommand("bun run build", buildCmd, m.logFile); err != nil {
-		return fmt.Errorf("bun run build failed")
-	}
-
-	// Verify dist/index.js exists
-	distPath := filepath.Join(m.projectDir, "dist", "index.js")
-	info, err := os.Stat(distPath)
-	if err != nil || info.Size() == 0 {
-		return fmt.Errorf("dist/index.js not found or empty after build")
-	}
-
-	return nil
-}
-
-func installAcpSdk(m *model) error {
-	if err := createBackup(m, m.configPath); err != nil {
-		return fmt.Errorf("failed to backup config: %w", err)
-	}
-
-	configDir, _ := getConfigDir()
-	opencodeNodeModules := filepath.Join(configDir, "opencode", "node_modules")
-
-	acpPath := filepath.Join(opencodeNodeModules, "@agentclientprotocol", "sdk")
-	if _, err := os.Stat(acpPath); err == nil {
-		return nil
-	}
-
-	packageJsonPath := filepath.Join(configDir, "opencode", "package.json")
-	if err := createBackup(m, packageJsonPath); err != nil {
-		return fmt.Errorf("failed to backup package.json: %w", err)
-	}
-
-	installCmd := exec.Command("bun", "add", "@agentclientprotocol/sdk@^0.13.1")
-	installCmd.Dir = filepath.Join(configDir, "opencode")
-	if err := runCommand("bun add @agentclientprotocol/sdk", installCmd, m.logFile); err != nil {
-		cleanupBackups(m)
-		return fmt.Errorf("failed to install ACP SDK: %w", err)
-	}
-
-	return nil
-}
-
-func createSymlink(m *model) error {
-	if err := os.MkdirAll(m.pluginDir, 0755); err != nil {
-		return fmt.Errorf("failed to create plugin directory: %w", err)
-	}
-
-	symlinkPath := filepath.Join(m.pluginDir, "cursor-acp.js")
-
-	if _, err := os.Lstat(symlinkPath); err == nil {
-		if err := createBackup(m, symlinkPath); err != nil {
-			return fmt.Errorf("failed to backup symlink: %w", err)
-		}
-		os.Remove(symlinkPath)
-	}
-
-	targetPath := filepath.Join(m.projectDir, "dist", "index.js")
-
-	if err := os.Symlink(targetPath, symlinkPath); err != nil {
-		return fmt.Errorf("failed to create symlink: %w", err)
-	}
-
-	if _, err := os.Stat(symlinkPath); err != nil {
-		return fmt.Errorf("symlink verification failed: %w", err)
-	}
-
-	return nil
-}
-
-func updateConfig(m *model) error {
-	if err := createBackup(m, m.configPath); err != nil {
-		return fmt.Errorf("failed to backup config: %w", err)
+func removeOldCursorAcpProvider(m *model) error {
+	data, err := os.ReadFile(m.configPath)
+	if err != nil {
+		return fmt.Errorf("failed to read config: %w", err)
 	}
 
 	var config map[string]interface{}
+	json.Unmarshal(data, &config)
 
-	data, err := os.ReadFile(m.configPath)
-	if err != nil {
-		if !os.IsNotExist(err) {
-			return fmt.Errorf("failed to read config: %w", err)
-		}
-		config = make(map[string]interface{})
-	} else {
-		if err := json.Unmarshal(data, &config); err != nil {
-			return fmt.Errorf("failed to parse config: %w", err)
-		}
-	}
-
-	// Ensure provider section exists
 	providers, ok := config["provider"].(map[string]interface{})
 	if !ok {
-		providers = make(map[string]interface{})
-		config["provider"] = providers
+		return nil
 	}
 
-	// Add cursor-acp provider
-	models := map[string]interface{}{
-		"auto":                    map[string]interface{}{"name": "Cursor Agent Auto"},
-		"composer-1":              map[string]interface{}{"name": "Cursor Agent Composer 1"},
-		"deepseek-v3.2":           map[string]interface{}{"name": "Cursor Agent DeepSeek V3.2"},
-		"gemini-3-flash":          map[string]interface{}{"name": "Cursor Agent Gemini 3 Flash"},
-		"gemini-3-pro":            map[string]interface{}{"name": "Cursor Agent Gemini 3 Pro"},
-		"gemini-3-pro-preview":    map[string]interface{}{"name": "Cursor Agent Gemini 3 Pro Preview"},
-		"gpt-5":                   map[string]interface{}{"name": "Cursor Agent GPT-5 (alias → gpt-5.2)"},
-		"gpt-5-mini":              map[string]interface{}{"name": "Cursor Agent GPT-5 Mini"},
-		"gpt-5-pro":               map[string]interface{}{"name": "Cursor Agent GPT-5 Pro"},
-		"gpt-5.1":                 map[string]interface{}{"name": "Cursor Agent GPT-5.1"},
-		"gpt-5.1-codex":           map[string]interface{}{"name": "Cursor Agent GPT-5.1 Codex"},
-		"gpt-5.1-codex-max-xhigh": map[string]interface{}{"name": "Cursor Agent GPT-5.1 Codex Max XHigh"},
-		"gpt-5.1-codex-mini-high": map[string]interface{}{"name": "Cursor Agent GPT-5.1 Codex Mini High"},
-		"gpt-5.1-high":            map[string]interface{}{"name": "Cursor Agent GPT-5.1 High"},
-		"gpt-5.2":                 map[string]interface{}{"name": "Cursor Agent GPT-5.2"},
-		"gpt-5.2-codex":           map[string]interface{}{"name": "Cursor Agent GPT-5.2 Codex"},
-		"gpt-5.2-high":            map[string]interface{}{"name": "Cursor Agent GPT-5.2 High"},
-		"gpt-5.2-xhigh":           map[string]interface{}{"name": "Cursor Agent GPT-5.2 XHigh"},
-		"grok-4":                  map[string]interface{}{"name": "Cursor Agent Grok 4"},
-		"grok-4-fast":             map[string]interface{}{"name": "Cursor Agent Grok 4 Fast"},
-		"grok-code":               map[string]interface{}{"name": "Cursor Agent Grok Code"},
-		"grok-code-fast":          map[string]interface{}{"name": "Cursor Agent Grok Code Fast"},
-		"haiku-4.5":               map[string]interface{}{"name": "Cursor Agent Claude 4.5 Haiku"},
-		"kimi-k2":                 map[string]interface{}{"name": "Cursor Agent Kimi K2"},
-		"opus-4.5":                map[string]interface{}{"name": "Cursor Agent Claude 4.5 Opus"},
-		"opus-4.5-thinking":       map[string]interface{}{"name": "Cursor Agent Claude 4.5 Opus Thinking"},
-		"sonnet-4.5":              map[string]interface{}{"name": "Cursor Agent Claude 4.5 Sonnet"},
-		"sonnet-4.5-thinking":     map[string]interface{}{"name": "Cursor Agent Claude 4.5 Sonnet Thinking"},
+	oldProvider, exists := providers["cursor-acp"]
+	if !exists {
+		return nil
 	}
 
-	providers["cursor-acp"] = map[string]interface{}{
-		"npm":    "opencode-cursor",
-		"name":   "Cursor Agent",
-		"models": models,
-	}
+	if oldNpm, ok := oldProvider.(map[string]interface{})["npm"].(string); ok && oldNpm == "@ai-sdk/openai-compatible" {
+		delete(providers, "cursor-acp")
 
-	// Write config back
-	output, err := json.MarshalIndent(config, "", "  ")
-	if err != nil {
-		return fmt.Errorf("failed to serialize config: %w", err)
-	}
+		output, err := json.MarshalIndent(config, "", "  ")
+		if err != nil {
+			return fmt.Errorf("failed to serialize config: %w", err)
+		}
 
-	// Ensure config directory exists
-	if err := os.MkdirAll(filepath.Dir(m.configPath), 0755); err != nil {
-		return fmt.Errorf("failed to create config directory: %w", err)
-	}
+		if err := os.WriteFile(m.configPath, output, 0644); err != nil {
+			return fmt.Errorf("failed to write config: %w", err)
+		}
 
-	if err := os.WriteFile(m.configPath, output, 0644); err != nil {
-		return fmt.Errorf("failed to write config: %w", err)
+		return nil
 	}
 
 	return nil
 }
 
-func removeOldCursorAcpProvider(m *model) error {
+func validateConfigAfterUninstall(m *model) error {
+	data, err := os.ReadFile(m.configPath)
+	if err != nil {
+		return fmt.Errorf("failed to read config: %w", err)
+	}
+
+	var config map[string]interface{}
+	json.Unmarshal(data, &config)
+
+	providers, ok := config["provider"].(map[string]interface{})
+	if !ok {
+		return fmt.Errorf("provider section missing from config")
+	}
+
+	return nil
+}
+
+func validateConfig(m *model) error {
+	if err := validateJSON(m.configPath); err != nil {
+		return fmt.Errorf("config validation failed: %w", err)
+	}
+
+	return nil
+}
 	data, err := os.ReadFile(m.configPath)
 	if err != nil {
 		return fmt.Errorf("failed to read config: %w", err)
@@ -262,7 +160,7 @@ func removeOldCursorAcpProvider(m *model) error {
 	return nil
 }
 
-	func removeOldCursorAcpProvider(m *model) error {
+func removeOldCursorAcpProvider(m *model) error {
 	data, err := os.ReadFile(m.configPath)
 	if err != nil {
 		return fmt.Errorf("failed to read config: %w", err)
@@ -513,7 +411,44 @@ func removeProviderConfig(m *model) error {
 	return nil
 }
 
-func validateConfigAfterUninstall(m *model) error {
+func removeOldCursorAcpProvider(m *model) error {
+	data, err := os.ReadFile(m.configPath)
+	if err != nil {
+		return fmt.Errorf("failed to read config: %w", err)
+	}
+
+	var config map[string]interface{}
+	json.Unmarshal(data, &config)
+
+	providers, ok := config["provider"].(map[string]interface{})
+	if !ok {
+		return nil
+	}
+
+	oldProvider, exists := providers["cursor-acp"]
+	if !exists {
+		return nil
+	}
+
+	if oldNpm, ok := oldProvider.(map[string]interface{})["npm"].(string); ok && oldNpm == "@ai-sdk/openai-compatible" {
+		delete(providers, "cursor-acp")
+
+		output, err := json.MarshalIndent(config, "", "  ")
+		if err != nil {
+			return fmt.Errorf("failed to serialize config: %w", err)
+		}
+
+		if err := os.WriteFile(m.configPath, output, 0644); err != nil {
+			return fmt.Errorf("failed to write config: %w", err)
+		}
+
+		return nil
+	}
+
+	return nil
+}
+
+func validateConfig(m *model) error {
 	if err := validateJSON(m.configPath); err != nil {
 		return fmt.Errorf("config validation failed: %w", err)
 	}
