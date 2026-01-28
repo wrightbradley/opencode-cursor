@@ -15,12 +15,21 @@ const LOG_LEVELS: Record<LogLevel, number> = {
   'debug': 4
 };
 
+const CONSOLE_METHODS: Record<string, 'error' | 'warn' | 'info' | 'debug' | 'log'> = {
+  'error': 'error',
+  'warn': 'warn',
+  'info': 'info',
+  'debug': 'debug',
+  'none': 'log'
+};
+
 export function logger(module: string, level: LogLevel = 'info'): Logger {
   const currentLevel = LOG_LEVELS[level];
 
   const log = (prefix: string, message: string, meta?: unknown) => {
-    const formatted = JSON.stringify({ module, message, ...(meta ? { meta } : {}) }, null, 0);
-    console[prefix === 'error' || prefix === 'warn' ? prefix : 'error'](`${prefix.toUpperCase()} [cursor:${module}] ${formatted}`);
+    const formatted = JSON.stringify({ module, message, ...(meta ? { meta } : {}) });
+    const consoleMethod = CONSOLE_METHODS[prefix] || 'log';
+    console[consoleMethod](`[cursor:${module}] ${prefix.toUpperCase()} ${formatted}`);
   };
 
   return {
