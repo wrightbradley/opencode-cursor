@@ -1,5 +1,3 @@
-# opencode-cursor
-
 ![header](docs/header.png)
 
 A lightweight OpenCode plugin for Cursor CLI integration via HTTP proxy.
