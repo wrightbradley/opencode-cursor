@@ -1,6 +1,55 @@
 ![header](docs/header.png)
 
-A lightweight OpenCode plugin that bridges to Cursor CLI via HTTP proxy. No E2BIG errors, full streaming support, 30+ models.
+# OpenCode Cursor Plugin
+
+Use your Cursor Pro subscription with [OpenCode](https://github.com/anomalyco/opencode) - the open-source AI coding assistant. Access Claude, GPT-5, Gemini, and 30+ models through Cursor's infrastructure with full streaming, OAuth authentication, and automatic model selection.
+
+## Why This Plugin?
+
+- **Use Cursor Pro in OpenCode** - Leverage your existing Cursor subscription in the terminal
+- **30+ Models** - Access Claude 4.5, GPT-5.2, Gemini 3 Pro, and more through one interface
+- **OAuth Integration** - Authenticate via browser, no API keys to manage
+- **No Rate Limits** - Uses your Cursor Pro quota, not separate API billing
+- **HTTP Proxy** - Avoids CLI argument length limits (E2BIG errors)
+
+## Architecture
+
+```mermaid
+flowchart LR
+    subgraph OpenCode
+        A[OpenCode TUI] --> B[AI SDK]
+    end
+
+    subgraph Plugin["cursor-acp Plugin"]
+        B --> C[HTTP Proxy<br/>:32124]
+        C --> D[cursor-agent CLI]
+    end
+
+    subgraph Cursor["Cursor Infrastructure"]
+        D --> E[Cursor API]
+        E --> F[Claude/GPT/Gemini]
+    end
+
+    subgraph Auth["Authentication"]
+        G[opencode auth login] --> H[OAuth Flow]
+        H --> I[Browser Login]
+        I --> J[~/.cursor/auth.json]
+        J --> D
+    end
+```
+
+## Alternatives Comparison
+
+| Feature | cursor-acp (this) | cursor-agent CLI | Cursor IDE | Direct API |
+|---------|------------------|------------------|------------|------------|
+| OpenCode Integration | ✅ Native plugin | ❌ Manual shell | ❌ Separate app | ✅ With config |
+| Authentication | ✅ OAuth via browser | ✅ OAuth via browser | ✅ Built-in | ⚠️ API key required |
+| Streaming | ✅ Full support | ✅ Full support | ✅ Built-in | ✅ Provider-dependent |
+| Model Selection | ✅ 30+ models | ✅ 30+ models | ✅ UI selector | ⚠️ Per-provider |
+| Uses Cursor Quota | ✅ Yes | ✅ Yes | ✅ Yes | ❌ Separate billing |
+| Long Prompts | ✅ HTTP proxy | ❌ CLI limits | ✅ No limits | ✅ No limits |
+| Cost | Cursor Pro ($20/mo) | Cursor Pro ($20/mo) | Cursor Pro ($20/mo) | Per-token billing |
+| Terminal Native | ✅ Yes | ✅ Yes | ❌ GUI only | ✅ Yes |
 
 ## Installation
 
@@ -103,10 +152,13 @@ node -e "const { formatStatusOutput } = require('opencode-cursor'); console.log(
 
 ## How It Works
 
-1. Plugin starts HTTP proxy server on port 32124
-2. OpenCode sends requests to proxy via `@ai-sdk/openai-compatible`
-3. Proxy spawns `cursor-agent` for each request
-4. cursor-agent streams responses back through proxy
+See the [Architecture diagram](#architecture) above. In brief:
+
+1. **Plugin loads** → Starts HTTP proxy on port 32124
+2. **OpenCode request** → AI SDK sends to proxy as OpenAI-compatible API
+3. **Proxy translates** → Spawns `cursor-agent` with prompt
+4. **cursor-agent** → Authenticates via `~/.cursor/auth.json`, calls Cursor API
+5. **Response streams** → Back through proxy to OpenCode
 
 ## Models
 
@@ -120,11 +172,26 @@ Available models include:
 
 ## Features
 
-- HTTP proxy mode (no CLI argument limits)
-- Full streaming support
-- Tool calling support
-- Auto model discovery
-- Go TUI installer with progress tracking
+- **OAuth Authentication** - Browser-based login, no API keys
+- **HTTP Proxy Mode** - Bypasses CLI argument length limits (E2BIG)
+- **Full Streaming** - Real-time response streaming
+- **30+ Models** - Claude, GPT, Gemini, DeepSeek, and more
+- **Auto Model Selection** - Use `cursor-acp/auto` for best available
+- **Structured Logging** - Configurable log levels for debugging
+- **Error Handling** - Parses quota/auth/network errors with helpful messages
+- **Go TUI Installer** - Interactive setup with progress tracking
+
+## Troubleshooting
+
+**"fetch() URL is invalid" on auth login:**
+- Run `opencode auth login` without arguments, then select "Other" → "cursor-acp"
+
+**Model not responding:**
+- Check authentication: `cursor-agent login`
+- Verify proxy: `curl http://127.0.0.1:32124/health`
+
+**Quota exceeded:**
+- Check usage at [cursor.com/settings](https://cursor.com/settings)
 
 ## License
 
