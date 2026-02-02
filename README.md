@@ -45,6 +45,23 @@ opencode run "your prompt" --model cursor-acp/auto
 opencode run "your prompt" --model cursor-acp/sonnet-4.5
 ```
 
+## Configuration
+
+### Environment Variables
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `CURSOR_ACP_LOG_LEVEL` | `info` | Log verbosity: `debug`, `info`, `warn`, `error` |
+| `CURSOR_ACP_LOG_SILENT` | `false` | Set to `1` to disable all logging |
+
+### Auth Status
+
+Check your authentication status:
+```bash
+# Via exported function
+node -e "const { formatStatusOutput } = require('opencode-cursor'); console.log(formatStatusOutput())"
+```
+
 ## Prerequisites
 
 - [Bun](https://bun.sh/) - JavaScript runtime
