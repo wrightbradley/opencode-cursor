@@ -13,7 +13,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
-func newModel(debugMode bool, logFile *os.File) model {
+func newModel(debugMode, noRollback bool, logFile *os.File) model {
 	s := spinner.New()
 	s.Style = lipgloss.NewStyle().Foreground(Secondary)
 	s.Spinner = spinner.Dot
@@ -32,6 +32,7 @@ func newModel(debugMode bool, logFile *os.File) model {
 		errors:        []string{},
 		warnings:      []string{},
 		debugMode:     debugMode,
+		noRollback:    noRollback,
 		logFile:       logFile,
 		ctx:           ctx,
 		cancel:        cancel,
@@ -116,10 +117,14 @@ func tickCmd() tea.Cmd {
 
 func main() {
 	debugMode := false
+	noRollback := false
+
 	for _, arg := range os.Args[1:] {
-		if arg == "--debug" || arg == "-d" {
+		switch arg {
+		case "--debug", "-d":
 			debugMode = true
-			break
+		case "--no-rollback":
+			noRollback = true
 		}
 	}
 
@@ -134,7 +139,7 @@ func main() {
 		logFile.WriteString(fmt.Sprintf("Debug Mode: %v\n\n", debugMode))
 	}
 
-	m := newModel(debugMode, logFile)
+	m := newModel(debugMode, noRollback, logFile)
 	p := tea.NewProgram(m, tea.WithAltScreen())
 	globalProgram = p
 

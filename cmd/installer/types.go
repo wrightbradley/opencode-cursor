@@ -67,6 +67,7 @@ type model struct {
 	warnings         []string
 	selectedOption   int
 	debugMode        bool
+	noRollback       bool
 	logFile          *os.File
 
 	// Animations

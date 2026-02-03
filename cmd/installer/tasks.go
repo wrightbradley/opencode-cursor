@@ -635,7 +635,7 @@ func (m model) handleTaskComplete(msg taskCompleteMsg) (tea.Model, tea.Cmd) {
 			logFile: m.logFile.Name(),
 		}
 
-		if !task.optional && len(m.backupFiles) > 0 && !m.isUninstall {
+		if !task.optional && len(m.backupFiles) > 0 && !m.isUninstall && !m.noRollback {
 			if err := restoreAllBackups(&m); err != nil {
 				m.errors = append(m.errors, msg.err+" (rollback failed: "+err.Error())
 			} else {
