@@ -1,10 +1,23 @@
 import type { Plugin, PluginInput } from "@opencode-ai/plugin";
 import type { Auth } from "@opencode-ai/sdk";
+import { mkdir } from "fs/promises";
+import { homedir } from "os";
+import { join } from "path";
 import { startCursorOAuth } from "./auth";
 import { createLogger } from "./utils/logger";
 import { parseAgentError, formatErrorForUser, stripAnsi } from "./utils/errors";
 
 const log = createLogger("plugin");
+
+async function ensurePluginDirectory(): Promise<void> {
+  const pluginDir = join(homedir(), ".config", "opencode", "plugin");
+  try {
+    await mkdir(pluginDir, { recursive: true });
+    log.debug("Plugin directory ensured", { path: pluginDir });
+  } catch (error) {
+    log.warn("Failed to create plugin directory", { error: String(error) });
+  }
+}
 
 const CURSOR_PROVIDER_ID = "cursor-acp";
 const CURSOR_PROXY_HOST = "127.0.0.1";
@@ -548,6 +561,7 @@ async function ensureCursorProxyServer(workspaceDirectory: string): Promise<stri
  */
 export const CursorPlugin: Plugin = async ({ $, directory }: PluginInput) => {
   log.info("Plugin initializing", { directory });
+  await ensurePluginDirectory();
   const proxyBaseURL = await ensureCursorProxyServer(directory);
   log.info("Proxy server started", { baseURL: proxyBaseURL });
 
