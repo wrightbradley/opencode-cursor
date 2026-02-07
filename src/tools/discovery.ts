@@ -37,8 +37,8 @@ export class OpenCodeToolDiscovery {
 
     let tools: OpenCodeTool[] = [];
 
-    // Try SDK first (tool.list)
-    if (this.executorPref !== "cli") {
+    // Try SDK first (tool.list) if available
+    if (this.executorPref !== "cli" && this.client?.tool?.list) {
       try {
         const resp: ToolListResponse = await this.client.tool.list();
         tools = (resp?.data?.tools || []).map((t: any) => this.normalize(t, "sdk"));
@@ -65,6 +65,10 @@ export class OpenCodeToolDiscovery {
       } catch (err) {
         log.error("CLI tool list error", { error: String(err) });
       }
+    }
+
+    if (tools.length === 0) {
+      log.warn("No tools discovered via SDK or CLI; tool exposure will be skipped");
     }
 
     // Deduplicate by id after namespace
