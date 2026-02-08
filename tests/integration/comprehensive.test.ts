@@ -258,13 +258,13 @@ describe("Comprehensive End-to-End Integration", () => {
       registerDefaultTools(registry);
       const executor = new LocalExecutor(registry);
 
-      // Non-existent file — handler catches and returns error as content
+      // Non-existent file — handler throws and executor returns error
       const result = await executeWithChain([executor], "read", {
         path: "/non/existent/file.txt"
       });
 
-      expect(result.status).toBe("success");
-      expect(result.output).toContain("Error");
+      expect(result.status).toBe("error");
+      expect(result.error).toBeDefined();
     });
 
     it("should handle invalid tool calls", async () => {

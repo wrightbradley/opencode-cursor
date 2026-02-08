@@ -39,4 +39,23 @@ describe("executeWithChain", () => {
     expect(result.output).toBe("second");
     expect(calls).toEqual(["first.can", "second.can", "second.exec"]);
   });
+
+  it("should catch errors from handlers and return error status", async () => {
+    const registry = new ToolRegistry();
+    registry.register({
+      id: "fail",
+      name: "fail",
+      description: "A tool that throws an error",
+      parameters: { type: "object", properties: {} },
+      source: "local" as const
+    }, async () => {
+      throw new Error("boom");
+    });
+
+    const executor = new LocalExecutor(registry);
+    const result = await executeWithChain([executor], "fail", {});
+
+    expect(result.status).toBe("error");
+    expect(result.error).toContain("boom");
+  });
 });

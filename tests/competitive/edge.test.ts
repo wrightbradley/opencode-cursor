@@ -187,10 +187,14 @@ describe("Competitive Edge Analysis", () => {
       const registry = new ToolRegistry();
       registerDefaultTools(registry);
 
-      // Test empty command
+      // Test empty command - should throw error
       const bashHandler = registry.getHandler("bash");
-      const result1 = await bashHandler?.({ command: "" });
-      expect(result1).toBeDefined();
+      try {
+        await bashHandler?.({ command: "" });
+        expect(true).toBe(false); // Should not reach here
+      } catch (error) {
+        expect(error).toBeDefined();
+      }
 
       // Test very long command output
       const result2 = await bashHandler?.({
