@@ -1,43 +1,45 @@
-import type { ToolRegistry } from "./registry.js";
+import type { ToolRegistry } from "./core/registry.js";
 
 /**
  * Register default OpenCode tools in the registry
  */
 export function registerDefaultTools(registry: ToolRegistry): void {
   // 1. Bash tool - Execute shell commands
-  registry.register("bash", {
-    type: "function",
-    function: {
-      name: "bash",
-      description: "Execute a shell command in a safe environment",
-      parameters: {
-        type: "object",
-        properties: {
-          command: {
-            type: "string",
-            description: "The shell command to execute"
-          },
-          timeout: {
-            type: "number",
-            description: "Timeout in milliseconds (default: 30000)"
-          },
-          cwd: {
-            type: "string",
-            description: "Working directory for the command"
-          }
+  registry.register({
+    id: "bash",
+    name: "bash",
+    description: "Execute a shell command in a safe environment",
+    parameters: {
+      type: "object",
+      properties: {
+        command: {
+          type: "string",
+          description: "The shell command to execute"
         },
-        required: ["command"]
-      }
-    }
+        timeout: {
+          type: "number",
+          description: "Timeout in milliseconds (default: 30000)"
+        },
+        cwd: {
+          type: "string",
+          description: "Working directory for the command"
+        }
+      },
+      required: ["command"]
+    },
+    source: "local" as const
   }, async (args) => {
     const { exec } = await import("child_process");
     const { promisify } = await import("util");
     const execAsync = promisify(exec);
 
     try {
-      const { stdout, stderr } = await execAsync(args.command, {
-        timeout: args.timeout || 30000,
-        cwd: args.cwd
+      const command = args.command as string;
+      const timeout = args.timeout as number | undefined;
+      const cwd = args.cwd as string | undefined;
+      const { stdout, stderr } = await execAsync(command, {
+        timeout: timeout || 30000,
+        cwd: cwd
       });
       return stdout || stderr || "Command executed successfully";
     } catch (error: any) {
@@ -46,39 +48,41 @@ export function registerDefaultTools(registry: ToolRegistry): void {
   });
 
   // 2. Read tool - Read file contents
-  registry.register("read", {
-    type: "function",
-    function: {
-      name: "read",
-      description: "Read the contents of a file",
-      parameters: {
-        type: "object",
-        properties: {
-          path: {
-            type: "string",
-            description: "Absolute path to the file to read"
-          },
-          offset: {
-            type: "number",
-            description: "Line number to start reading from"
-          },
-          limit: {
-            type: "number",
-            description: "Maximum number of lines to read"
-          }
+  registry.register({
+    id: "read",
+    name: "read",
+    description: "Read the contents of a file",
+    parameters: {
+      type: "object",
+      properties: {
+        path: {
+          type: "string",
+          description: "Absolute path to the file to read"
         },
-        required: ["path"]
-      }
-    }
+        offset: {
+          type: "number",
+          description: "Line number to start reading from"
+        },
+        limit: {
+          type: "number",
+          description: "Maximum number of lines to read"
+        }
+      },
+      required: ["path"]
+    },
+    source: "local" as const
   }, async (args) => {
     const fs = await import("fs");
     try {
-      let content = fs.readFileSync(args.path, "utf-8");
+      const path = args.path as string;
+      const offset = args.offset as number | undefined;
+      const limit = args.limit as number | undefined;
+      let content = fs.readFileSync(path, "utf-8");
 
-      if (args.offset !== undefined || args.limit !== undefined) {
+      if (offset !== undefined || limit !== undefined) {
         const lines = content.split("\n");
-        const start = args.offset || 0;
-        const end = args.limit ? start + args.limit : lines.length;
+        const start = offset || 0;
+        const end = limit ? start + limit : lines.length;
         content = lines.slice(start, end).join("\n");
       }
 
@@ -89,120 +93,125 @@ export function registerDefaultTools(registry: ToolRegistry): void {
   });
 
   // 3. Write tool - Write file contents
-  registry.register("write", {
-    type: "function",
-    function: {
-      name: "write",
-      description: "Write content to a file (creates or overwrites)",
-      parameters: {
-        type: "object",
-        properties: {
-          path: {
-            type: "string",
-            description: "Absolute path to the file to write"
-          },
-          content: {
-            type: "string",
-            description: "Content to write to the file"
-          }
+  registry.register({
+    id: "write",
+    name: "write",
+    description: "Write content to a file (creates or overwrites)",
+    parameters: {
+      type: "object",
+      properties: {
+        path: {
+          type: "string",
+          description: "Absolute path to the file to write"
         },
-        required: ["path", "content"]
-      }
-    }
+        content: {
+          type: "string",
+          description: "Content to write to the file"
+        }
+      },
+      required: ["path", "content"]
+    },
+    source: "local" as const
   }, async (args) => {
     const fs = await import("fs");
     const path = await import("path");
     try {
+      const filePath = args.path as string;
+      const content = args.content as string;
       // Ensure directory exists
-      const dir = path.dirname(args.path);
+      const dir = path.dirname(filePath);
       if (!fs.existsSync(dir)) {
         fs.mkdirSync(dir, { recursive: true });
       }
 
-      fs.writeFileSync(args.path, args.content, "utf-8");
-      return `File written successfully: ${args.path}`;
+      fs.writeFileSync(filePath, content, "utf-8");
+      return `File written successfully: ${filePath}`;
     } catch (error: any) {
       return `Error writing file: ${error.message}`;
     }
   });
 
   // 4. Edit tool - Edit file contents
-  registry.register("edit", {
-    type: "function",
-    function: {
-      name: "edit",
-      description: "Edit a file by replacing old text with new text",
-      parameters: {
-        type: "object",
-        properties: {
-          path: {
-            type: "string",
-            description: "Absolute path to the file to edit"
-          },
-          old_string: {
-            type: "string",
-            description: "The text to replace"
-          },
-          new_string: {
-            type: "string",
-            description: "The replacement text"
-          }
+  registry.register({
+    id: "edit",
+    name: "edit",
+    description: "Edit a file by replacing old text with new text",
+    parameters: {
+      type: "object",
+      properties: {
+        path: {
+          type: "string",
+          description: "Absolute path to the file to edit"
         },
-        required: ["path", "old_string", "new_string"]
-      }
-    }
+        old_string: {
+          type: "string",
+          description: "The text to replace"
+        },
+        new_string: {
+          type: "string",
+          description: "The replacement text"
+        }
+      },
+      required: ["path", "old_string", "new_string"]
+    },
+    source: "local" as const
   }, async (args) => {
     const fs = await import("fs");
     try {
-      let content = fs.readFileSync(args.path, "utf-8");
+      const path = args.path as string;
+      const oldString = args.old_string as string;
+      const newString = args.new_string as string;
+      let content = fs.readFileSync(path, "utf-8");
 
-      if (!content.includes(args.old_string)) {
-        return `Error: Could not find the text to replace in ${args.path}`;
+      if (!content.includes(oldString)) {
+        return `Error: Could not find the text to replace in ${path}`;
       }
 
-      content = content.replaceAll(args.old_string, args.new_string);
-      fs.writeFileSync(args.path, content, "utf-8");
+      content = content.replaceAll(oldString, newString);
+      fs.writeFileSync(path, content, "utf-8");
 
-      return `File edited successfully: ${args.path}`;
+      return `File edited successfully: ${path}`;
     } catch (error: any) {
       return `Error editing file: ${error.message}`;
     }
   });
 
   // 5. Grep tool - Search file contents
-  registry.register("grep", {
-    type: "function",
-    function: {
-      name: "grep",
-      description: "Search for a pattern in files",
-      parameters: {
-        type: "object",
-        properties: {
-          pattern: {
-            type: "string",
-            description: "The search pattern (regex supported)"
-          },
-          path: {
-            type: "string",
-            description: "Directory or file to search in"
-          },
-          include: {
-            type: "string",
-            description: "File pattern to include (e.g., '*.ts')"
-          }
+  registry.register({
+    id: "grep",
+    name: "grep",
+    description: "Search for a pattern in files",
+    parameters: {
+      type: "object",
+      properties: {
+        pattern: {
+          type: "string",
+          description: "The search pattern (regex supported)"
         },
-        required: ["pattern", "path"]
-      }
-    }
+        path: {
+          type: "string",
+          description: "Directory or file to search in"
+        },
+        include: {
+          type: "string",
+          description: "File pattern to include (e.g., '*.ts')"
+        }
+      },
+      required: ["pattern", "path"]
+    },
+    source: "local" as const
   }, async (args) => {
     const { exec } = await import("child_process");
     const { promisify } = await import("util");
     const execAsync = promisify(exec);
 
     try {
-      const includeFlag = args.include ? `--include="${args.include}"` : "";
+      const pattern = args.pattern as string;
+      const path = args.path as string;
+      const include = args.include as string | undefined;
+      const includeFlag = include ? `--include="${include}"` : "";
       const { stdout } = await execAsync(
-        `grep -r ${includeFlag} -n "${args.pattern}" "${args.path}" 2>/dev/null || true`,
+        `grep -r ${includeFlag} -n "${pattern}" "${path}" 2>/dev/null || true`,
         { timeout: 30000 }
       );
 
@@ -213,27 +222,27 @@ export function registerDefaultTools(registry: ToolRegistry): void {
   });
 
   // 6. LS tool - List directory contents
-  registry.register("ls", {
-    type: "function",
-    function: {
-      name: "ls",
-      description: "List directory contents",
-      parameters: {
-        type: "object",
-        properties: {
-          path: {
-            type: "string",
-            description: "Absolute path to the directory"
-          }
-        },
-        required: ["path"]
-      }
-    }
+  registry.register({
+    id: "ls",
+    name: "ls",
+    description: "List directory contents",
+    parameters: {
+      type: "object",
+      properties: {
+        path: {
+          type: "string",
+          description: "Absolute path to the directory"
+        }
+      },
+      required: ["path"]
+    },
+    source: "local" as const
   }, async (args) => {
     const fs = await import("fs");
     const path = await import("path");
     try {
-      const entries = fs.readdirSync(args.path, { withFileTypes: true });
+      const dirPath = args.path as string;
+      const entries = fs.readdirSync(dirPath, { withFileTypes: true });
 
       const result = entries.map(entry => {
         const type = entry.isDirectory() ? "d" :
@@ -249,35 +258,36 @@ export function registerDefaultTools(registry: ToolRegistry): void {
   });
 
   // 7. Glob tool - Find files matching pattern
-  registry.register("glob", {
-    type: "function",
-    function: {
-      name: "glob",
-      description: "Find files matching a glob pattern",
-      parameters: {
-        type: "object",
-        properties: {
-          pattern: {
-            type: "string",
-            description: "Glob pattern (e.g., '**/*.ts')"
-          },
-          path: {
-            type: "string",
-            description: "Directory to search in (default: current directory)"
-          }
+  registry.register({
+    id: "glob",
+    name: "glob",
+    description: "Find files matching a glob pattern",
+    parameters: {
+      type: "object",
+      properties: {
+        pattern: {
+          type: "string",
+          description: "Glob pattern (e.g., '**/*.ts')"
         },
-        required: ["pattern"]
-      }
-    }
+        path: {
+          type: "string",
+          description: "Directory to search in (default: current directory)"
+        }
+      },
+      required: ["pattern"]
+    },
+    source: "local" as const
   }, async (args) => {
     const { exec } = await import("child_process");
     const { promisify } = await import("util");
     const execAsync = promisify(exec);
 
     try {
-      const cwd = args.path || ".";
+      const pattern = args.pattern as string;
+      const path = args.path as string | undefined;
+      const cwd = path || ".";
       const { stdout } = await execAsync(
-        `find "${cwd}" -type f -name "${args.pattern}" 2>/dev/null | head -50`,
+        `find "${cwd}" -type f -name "${pattern}" 2>/dev/null | head -50`,
         { timeout: 30000 }
       );
 

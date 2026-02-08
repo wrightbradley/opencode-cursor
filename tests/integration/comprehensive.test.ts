@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll } from "bun:test";
 import { createProxyServer } from "../../src/proxy/server.js";
-import { ToolRegistry, ToolExecutor } from "../../src/tools/index.js";
+import { ToolRegistry, executeWithChain, LocalExecutor } from "../../src/tools/index.js";
 import { registerDefaultTools, getDefaultToolNames } from "../../src/tools/defaults.js";
 import { ModelDiscoveryService, ConfigUpdater } from "../../src/models/index.js";
 import { createCursorProvider } from "../../src/provider.js";
@@ -63,14 +63,14 @@ describe("Comprehensive End-to-End Integration", () => {
       const registry = new ToolRegistry();
       registerDefaultTools(registry);
 
-      expect(registry.getAllDefinitions().length).toBe(7);
-      expect(registry.has("bash")).toBe(true);
-      expect(registry.has("read")).toBe(true);
-      expect(registry.has("write")).toBe(true);
-      expect(registry.has("edit")).toBe(true);
-      expect(registry.has("grep")).toBe(true);
-      expect(registry.has("ls")).toBe(true);
-      expect(registry.has("glob")).toBe(true);
+      expect(registry.list().length).toBe(7);
+      expect(registry.getTool("bash")).toBeDefined();
+      expect(registry.getTool("read")).toBeDefined();
+      expect(registry.getTool("write")).toBeDefined();
+      expect(registry.getTool("edit")).toBeDefined();
+      expect(registry.getTool("grep")).toBeDefined();
+      expect(registry.getTool("ls")).toBeDefined();
+      expect(registry.getTool("glob")).toBeDefined();
     });
   });
 
@@ -129,7 +129,7 @@ describe("Comprehensive End-to-End Integration", () => {
 
       const registry = new ToolRegistry();
       registerDefaultTools(registry);
-      const executor = new ToolExecutor(registry);
+      const executor = new LocalExecutor(registry);
 
       const testDir = `/tmp/e2e-test-${Date.now()}`;
       const testFile = path.join(testDir, "test.txt");
@@ -138,36 +138,42 @@ describe("Comprehensive End-to-End Integration", () => {
       fs.mkdirSync(testDir, { recursive: true });
 
       // Write file
-      await executor.execute("write", {
+      const writeResult = await executeWithChain([executor], "write", {
         path: testFile,
         content: "Line 1\nLine 2\nLine 3"
       });
+      expect(writeResult.status).toBe("success");
 
       // Read file
-      const readResult = await executor.execute("read", { path: testFile });
-      expect(readResult).toBe("Line 1\nLine 2\nLine 3");
+      const readResult = await executeWithChain([executor], "read", { path: testFile });
+      expect(readResult.status).toBe("success");
+      expect(readResult.output).toBe("Line 1\nLine 2\nLine 3");
 
       // Edit file
-      await executor.execute("edit", {
+      const editResult = await executeWithChain([executor], "edit", {
         path: testFile,
         old_string: "Line 2",
         new_string: "Modified Line"
       });
+      expect(editResult.status).toBe("success");
 
       // Read again
-      const editedResult = await executor.execute("read", { path: testFile });
-      expect(editedResult).toBe("Line 1\nModified Line\nLine 3");
+      const editedResult = await executeWithChain([executor], "read", { path: testFile });
+      expect(editedResult.status).toBe("success");
+      expect(editedResult.output).toBe("Line 1\nModified Line\nLine 3");
 
       // List directory
-      const lsResult = await executor.execute("ls", { path: testDir });
-      expect(lsResult).toContain("test.txt");
+      const lsResult = await executeWithChain([executor], "ls", { path: testDir });
+      expect(lsResult.status).toBe("success");
+      expect(lsResult.output).toContain("test.txt");
 
       // Grep for content
-      const grepResult = await executor.execute("grep", {
+      const grepResult = await executeWithChain([executor], "grep", {
         pattern: "Modified",
         path: testDir
       });
-      expect(grepResult).toContain("Modified Line");
+      expect(grepResult.status).toBe("success");
+      expect(grepResult.output).toContain("Modified Line");
 
       // Cleanup
       fs.unlinkSync(testFile);
@@ -189,13 +195,13 @@ describe("Comprehensive End-to-End Integration", () => {
     it("should handle multiple concurrent tool executions", async () => {
       const registry = new ToolRegistry();
       registerDefaultTools(registry);
-      const executor = new ToolExecutor(registry);
+      const executor = new LocalExecutor(registry);
 
       const startTime = Date.now();
 
       // Execute 10 tool calls concurrently
       const promises = Array(10).fill(null).map((_, i) =>
-        executor.execute("bash", { command: `echo "test-${i}"` })
+        executeWithChain([executor], "bash", { command: `echo "test-${i}"` })
       );
 
       const results = await Promise.all(promises);
@@ -207,7 +213,8 @@ describe("Comprehensive End-to-End Integration", () => {
 
       // Verify all results
       for (let i = 0; i < 10; i++) {
-        expect(results[i]).toContain(`test-${i}`);
+        expect(results[i].status).toBe("success");
+        expect(results[i].output).toContain(`test-${i}`);
       }
     });
 
@@ -249,28 +256,25 @@ describe("Comprehensive End-to-End Integration", () => {
     it("should handle tool execution errors", async () => {
       const registry = new ToolRegistry();
       registerDefaultTools(registry);
-      const executor = new ToolExecutor(registry);
+      const executor = new LocalExecutor(registry);
 
-      // Non-existent file
-      const result = await executor.execute("read", {
+      // Non-existent file — handler catches and returns error as content
+      const result = await executeWithChain([executor], "read", {
         path: "/non/existent/file.txt"
       });
 
-      expect(result).toContain("Error");
+      expect(result.status).toBe("success");
+      expect(result.output).toContain("Error");
     });
 
     it("should handle invalid tool calls", async () => {
       const registry = new ToolRegistry();
-      const executor = new ToolExecutor(registry);
+      const executor = new LocalExecutor(registry);
 
-      let errorThrown = false;
-      try {
-        await executor.execute("non-existent-tool", {});
-      } catch (e) {
-        errorThrown = true;
-      }
+      const result = await executeWithChain([executor], "non-existent-tool", {});
 
-      expect(errorThrown).toBe(true);
+      expect(result.status).toBe("error");
+      expect(result.error).toContain("No executor");
     });
   });
 
@@ -296,11 +300,11 @@ describe("Comprehensive End-to-End Integration", () => {
       expect(toolNames.length).toBe(7);
 
       for (const name of toolNames) {
-        const tool = registry.get(name);
+        const tool = registry.getTool(name);
         expect(tool).toBeDefined();
-        expect(tool?.definition.function.name).toBe(name);
-        expect(tool?.definition.function.description).toBeDefined();
-        expect(tool?.definition.function.parameters).toBeDefined();
+        expect(tool?.name).toBe(name);
+        expect(tool?.description).toBeDefined();
+        expect(tool?.parameters).toBeDefined();
       }
     });
 

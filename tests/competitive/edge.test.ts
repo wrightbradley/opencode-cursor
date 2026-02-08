@@ -1,6 +1,6 @@
 import { describe, it, expect } from "bun:test";
 import { createProxyServer } from "../../src/proxy/server.js";
-import { ToolRegistry } from "../../src/tools/registry.js";
+import { ToolRegistry } from "../../src/tools/core/registry.js";
 import { registerDefaultTools, getDefaultToolNames } from "../../src/tools/defaults.js";
 import { ModelDiscoveryService } from "../../src/models/discovery.js";
 import { createCursorProvider } from "../../src/provider.js";
@@ -21,18 +21,18 @@ describe("Competitive Edge Analysis", () => {
       const registry = new ToolRegistry();
       registerDefaultTools(registry);
 
-      const toolCount = registry.getAllDefinitions().length;
+      const toolCount = registry.list().length;
 
       // Competitors typically have: bash, read, write (3-4 tools)
       // We have: bash, read, write, edit, grep, ls, glob (7 tools)
       expect(toolCount).toBeGreaterThanOrEqual(7);
-      expect(registry.has("bash")).toBe(true);
-      expect(registry.has("read")).toBe(true);
-      expect(registry.has("write")).toBe(true);
-      expect(registry.has("edit")).toBe(true); // Many competitors lack this
-      expect(registry.has("grep")).toBe(true); // Many competitors lack this
-      expect(registry.has("ls")).toBe(true);   // Many competitors lack this
-      expect(registry.has("glob")).toBe(true); // Many competitors lack this
+      expect(registry.getTool("bash")).toBeDefined();
+      expect(registry.getTool("read")).toBeDefined();
+      expect(registry.getTool("write")).toBeDefined();
+      expect(registry.getTool("edit")).toBeDefined(); // Many competitors lack this
+      expect(registry.getTool("grep")).toBeDefined(); // Many competitors lack this
+      expect(registry.getTool("ls")).toBeDefined();   // Many competitors lack this
+      expect(registry.getTool("glob")).toBeDefined(); // Many competitors lack this
     });
 
     it("should support BOTH proxy mode AND direct mode", () => {
@@ -130,9 +130,9 @@ describe("Competitive Edge Analysis", () => {
       registerDefaultTools(registry);
 
       // Execute 20 tools concurrently
+      const bashHandler = registry.getHandler("bash");
       const promises = Array(20).fill(null).map((_, i) => {
-        const tool = registry.get("bash");
-        return tool?.executor({ command: `echo "concurrent-${i}"` });
+        return bashHandler?.({ command: `echo "concurrent-${i}"` });
       });
 
       const startTime = Date.now();
@@ -154,9 +154,9 @@ describe("Competitive Edge Analysis", () => {
 
       const registry = new ToolRegistry();
       expect(registry.register).toBeDefined();
-      expect(registry.get).toBeDefined();
-      expect(registry.has).toBeDefined();
-      expect(registry.getAllDefinitions).toBeDefined();
+      expect(registry.getTool).toBeDefined();
+      expect(registry.getHandler).toBeDefined();
+      expect(registry.list).toBeDefined();
 
       const service = new ModelDiscoveryService();
       expect(service.discover).toBeDefined();
@@ -168,21 +168,8 @@ describe("Competitive Edge Analysis", () => {
       registerDefaultTools(registry);
 
       // Should handle missing tool gracefully
-      let errorThrown = false;
-      let errorMessage = "";
-
-      try {
-        const tool = registry.get("non-existent");
-        if (!tool) {
-          throw new Error("Tool not found");
-        }
-      } catch (e: any) {
-        errorThrown = true;
-        errorMessage = e.message;
-      }
-
-      expect(errorThrown).toBe(true);
-      expect(errorMessage).toContain("not found");
+      const tool = registry.getTool("non-existent");
+      expect(tool).toBeUndefined();
     });
 
     it("should have CLI tool for model discovery", () => {
@@ -201,18 +188,18 @@ describe("Competitive Edge Analysis", () => {
       registerDefaultTools(registry);
 
       // Test empty command
-      const bashTool = registry.get("bash");
-      const result1 = await bashTool?.executor({ command: "" });
+      const bashHandler = registry.getHandler("bash");
+      const result1 = await bashHandler?.({ command: "" });
       expect(result1).toBeDefined();
 
       // Test very long command output
-      const result2 = await bashTool?.executor({
+      const result2 = await bashHandler?.({
         command: "seq 1 1000"
       });
       expect(result2?.split("\n").length).toBeGreaterThan(900);
 
       // Test special characters
-      const result3 = await bashTool?.executor({
+      const result3 = await bashHandler?.({
         command: "echo 'special: !@#$%^&*()'"
       });
       expect(result3).toContain("special");
@@ -240,27 +227,27 @@ describe("Competitive Edge Analysis", () => {
       const tmpFile = `/tmp/chain-test-${Date.now()}.txt`;
 
       // Write
-      const writeTool = registry.get("write");
-      await writeTool?.executor({
+      const writeHandler = registry.getHandler("write");
+      await writeHandler?.({
         path: tmpFile,
         content: "initial content"
       });
 
       // Read
-      const readTool = registry.get("read");
-      const content1 = await readTool?.executor({ path: tmpFile });
+      const readHandler = registry.getHandler("read");
+      const content1 = await readHandler?.({ path: tmpFile });
       expect(content1).toBe("initial content");
 
       // Edit
-      const editTool = registry.get("edit");
-      await editTool?.executor({
+      const editHandler = registry.getHandler("edit");
+      await editHandler?.({
         path: tmpFile,
         old_string: "initial",
         new_string: "modified"
       });
 
       // Read again
-      const content2 = await readTool?.executor({ path: tmpFile });
+      const content2 = await readHandler?.({ path: tmpFile });
       expect(content2).toBe("modified content");
 
       // Cleanup
@@ -273,44 +260,44 @@ describe("Competitive Edge Analysis", () => {
       const registry = new ToolRegistry();
       registerDefaultTools(registry);
 
-      expect(registry.has("glob")).toBe(true);
-
-      const globTool = registry.get("glob");
-      expect(globTool?.definition.function.description).toContain("glob");
+      const globTool = registry.getTool("glob");
+      expect(globTool).toBeDefined();
+      expect(globTool?.description).toContain("glob");
     });
 
-    it("should have schema prompt generation for AI tools", () => {
-      const { createToolSchemaPrompt } = require("../../src/tools/mapper.js");
-
+    it("should have comprehensive tool definitions with metadata", () => {
       const registry = new ToolRegistry();
       registerDefaultTools(registry);
 
-      const prompt = createToolSchemaPrompt(registry.getAllDefinitions());
+      const tools = registry.list();
+      expect(tools.length).toBeGreaterThanOrEqual(7);
 
-      expect(prompt).toContain("Tool:");
-      expect(prompt).toContain("bash");
-      expect(prompt).toContain("read");
-      expect(prompt).toContain("Usage:");
+      // Each tool should have complete metadata
+      for (const tool of tools) {
+        expect(tool.name).toBeDefined();
+        expect(tool.description).toBeDefined();
+        expect(tool.parameters).toBeDefined();
+        expect(tool.source).toBe("local");
+      }
     });
 
     it("should support both sync and async tool execution", async () => {
       const registry = new ToolRegistry();
 
       // Register async tool
-      registry.register("async-tool", {
-        type: "function",
-        function: {
-          name: "async-tool",
-          description: "Async test tool",
-          parameters: { type: "object", properties: {}, required: [] }
-        }
+      registry.register({
+        id: "async-tool",
+        name: "async-tool",
+        description: "Async test tool",
+        parameters: { type: "object", properties: {}, required: [] },
+        source: "local" as const
       }, async () => {
         await new Promise(resolve => setTimeout(resolve, 10));
         return "async result";
       });
 
-      const tool = registry.get("async-tool");
-      const result = await tool?.executor({});
+      const handler = registry.getHandler("async-tool");
+      const result = await handler?.({});
       expect(result).toBe("async result");
     });
 

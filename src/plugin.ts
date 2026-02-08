@@ -1,4 +1,5 @@
 import type { Plugin, PluginInput } from "@opencode-ai/plugin";
+import { tool } from "@opencode-ai/plugin";
 import type { Auth } from "@opencode-ai/sdk";
 import { mkdir } from "fs/promises";
 import { homedir } from "os";
@@ -13,9 +14,17 @@ import { createLogger } from "./utils/logger";
 import { parseAgentError, formatErrorForUser, stripAnsi } from "./utils/errors";
 import { OpenCodeToolDiscovery } from "./tools/discovery.js";
 import { toOpenAiParameters, describeTool } from "./tools/schema.js";
-import { OpenCodeToolExecutor } from "./tools/executor.js";
 import { ToolRouter } from "./tools/router.js";
+import { SkillLoader } from "./tools/skills/loader.js";
+import { SkillResolver } from "./tools/skills/resolver.js";
 import { createOpencodeClient } from "@opencode-ai/sdk";
+import { ToolRegistry as CoreRegistry } from "./tools/core/registry.js";
+import { LocalExecutor } from "./tools/executors/local.js";
+import { SdkExecutor } from "./tools/executors/sdk.js";
+import { McpExecutor } from "./tools/executors/mcp.js";
+import { executeWithChain } from "./tools/core/executor.js";
+import { registerDefaultTools } from "./tools/defaults.js";
+import type { IToolExecutor } from "./tools/core/types.js";
 
 const log = createLogger("plugin");
 
@@ -329,8 +338,8 @@ async function ensureCursorProxyServer(workspaceDirectory: string, toolRouter?: 
                     }
                   }
 
-                  // Optional: forward tool calls to OpenCode tool executor.
-                  if (FORWARD_TOOL_CALLS && toolRouter) {
+                  // Handle OpenCode tools
+                  if (toolRouter && forwardToolCalls) {
                     const toolResult = await toolRouter.handleToolCall(event as any, { id, created, model });
                     if (toolResult) {
                       controller.enqueue(encoder.encode(`data: ${JSON.stringify(toolResult)}\n\n`));
@@ -591,7 +600,7 @@ async function ensureCursorProxyServer(workspaceDirectory: string, toolRouter?: 
                 }
               }
 
-              if (FORWARD_TOOL_CALLS && toolRouter) {
+              if (toolRouter && forwardToolCalls) {
                 const toolResult = await toolRouter.handleToolCall(event as any, { id, created, model });
                 if (toolResult) {
                   res.write(`data: ${JSON.stringify(toolResult)}\n\n`);
@@ -627,7 +636,7 @@ async function ensureCursorProxyServer(workspaceDirectory: string, toolRouter?: 
                 }
               }
 
-              if (FORWARD_TOOL_CALLS && toolRouter) {
+              if (toolRouter && forwardToolCalls) {
                 const toolResult = await toolRouter.handleToolCall(event as any, { id, created, model });
                 if (toolResult) {
                   res.write(`data: ${JSON.stringify(toolResult)}\n\n`);
@@ -730,6 +739,96 @@ async function ensureCursorProxyServer(workspaceDirectory: string, toolRouter?: 
 }
 
 /**
+ * Convert JSON Schema parameters to Zod schemas for plugin tool hook
+ */
+function jsonSchemaToZod(jsonSchema: any): any {
+  const z = tool.schema;
+  const properties = jsonSchema.properties || {};
+  const required = jsonSchema.required || [];
+
+  const zodShape: any = {};
+
+  for (const [key, prop] of Object.entries(properties)) {
+    const p = prop as any;
+    let zodType: any;
+
+    switch (p.type) {
+      case "string":
+        zodType = z.string();
+        if (p.description) {
+          zodType = zodType.describe(p.description);
+        }
+        break;
+      case "number":
+        zodType = z.number();
+        if (p.description) {
+          zodType = zodType.describe(p.description);
+        }
+        break;
+      case "boolean":
+        zodType = z.boolean();
+        if (p.description) {
+          zodType = zodType.describe(p.description);
+        }
+        break;
+      case "object":
+        zodType = z.record(z.any());
+        if (p.description) {
+          zodType = zodType.describe(p.description);
+        }
+        break;
+      case "array":
+        zodType = z.array(z.any());
+        if (p.description) {
+          zodType = zodType.describe(p.description);
+        }
+        break;
+      default:
+        zodType = z.any();
+        break;
+    }
+
+    // Make optional if not in required array
+    if (!required.includes(key)) {
+      zodType = zodType.optional();
+    }
+
+    zodShape[key] = zodType;
+  }
+
+  return zodShape;
+}
+
+/**
+ * Build tool hook entries from local registry
+ */
+function buildToolHookEntries(registry: CoreRegistry): Record<string, any> {
+  const entries: Record<string, any> = {};
+  const tools = registry.list();
+
+  for (const t of tools) {
+    const handler = registry.getHandler(t.name);
+    if (!handler) continue;
+
+    const zodArgs = jsonSchemaToZod(t.parameters);
+
+    entries[t.name] = tool({
+      description: t.description,
+      args: zodArgs,
+      async execute(args: any, context: any) {
+        try {
+          return await handler(args);
+        } catch (error: any) {
+          return `Error: ${error.message || String(error)}`;
+        }
+      },
+    });
+  }
+
+  return entries;
+}
+
+/**
  * OpenCode plugin for Cursor Agent
  */
 export const CursorPlugin: Plugin = async ({ $, directory, client, serverUrl }: PluginInput) => {
@@ -738,14 +837,37 @@ export const CursorPlugin: Plugin = async ({ $, directory, client, serverUrl }: 
 
   // Tools (skills) discovery/execution wiring
   const toolsEnabled = process.env.CURSOR_ACP_ENABLE_OPENCODE_TOOLS !== "false"; // default ON
+  const forwardToolCalls = process.env.CURSOR_ACP_FORWARD_TOOL_CALLS !== "false"; // default ON
   // Build a client with serverUrl so SDK tool.list works even if the injected client isn't fully configured.
   const serverClient = toolsEnabled
     ? createOpencodeClient({ serverUrl: serverUrl.toString(), directory })
     : null;
   const discovery = toolsEnabled ? new OpenCodeToolDiscovery(serverClient ?? client) : null;
-  const executor = toolsEnabled ? new OpenCodeToolExecutor(serverClient ?? client) : null;
+
+  // Build executor chain: Local -> SDK -> MCP
+  const localRegistry = new CoreRegistry();
+  registerDefaultTools(localRegistry);
+
+  const timeoutMs = Number(process.env.CURSOR_ACP_TOOL_TIMEOUT_MS || 30000);
+  const localExec = new LocalExecutor(localRegistry);
+  const sdkExec = toolsEnabled ? new SdkExecutor(serverClient ?? client, timeoutMs) : null;
+  const mcpExec = toolsEnabled ? new McpExecutor(serverClient ?? client, timeoutMs) : null;
+
+  const executorChain: IToolExecutor[] = [localExec];
+  if (sdkExec) executorChain.push(sdkExec);
+  if (mcpExec) executorChain.push(mcpExec);
+
   const toolsByName = new Map<string, any>();
-  const router = toolsEnabled && executor ? new ToolRouter({ executor, toolsByName }) : null;
+  const skillLoader = new SkillLoader();
+  let skillResolver: SkillResolver | null = null;
+
+  const router = toolsEnabled
+    ? new ToolRouter({
+        execute: (toolId, args) => executeWithChain(executorChain, toolId, args),
+        toolsByName,
+        resolveName: (name) => skillResolver?.resolve(name),
+      })
+    : null;
   let lastToolNames: string[] = [];
   let lastToolMap: Array<{ id: string; name: string }> = [];
 
@@ -754,6 +876,16 @@ export const CursorPlugin: Plugin = async ({ $, directory, client, serverUrl }: 
     const list = await discovery.listTools();
     toolsByName.clear();
     list.forEach((t) => toolsByName.set(t.name, t));
+
+    // Load skills and initialize resolver for alias resolution
+    const skills = skillLoader.load(list);
+    skillResolver = new SkillResolver(skills);
+
+    // Populate MCP executor with discovered SDK tool IDs
+    if (mcpExec) {
+      const sdkToolIds = list.filter((t) => t.source === "sdk").map((t) => t.id);
+      mcpExec.setToolIds(sdkToolIds);
+    }
 
     const toolEntries: any[] = [];
     const add = (name: string, t: any) => {
@@ -794,7 +926,11 @@ export const CursorPlugin: Plugin = async ({ $, directory, client, serverUrl }: 
   const proxyBaseURL = await ensureCursorProxyServer(directory, router);
   log.info("Proxy server started", { baseURL: proxyBaseURL });
 
+  // Build tool hook entries from local registry
+  const toolHookEntries = buildToolHookEntries(localRegistry);
+
   return {
+    tool: toolHookEntries,
     auth: {
       provider: CURSOR_PROVIDER_ID,
       async loader(_getAuth: () => Promise<Auth>) {

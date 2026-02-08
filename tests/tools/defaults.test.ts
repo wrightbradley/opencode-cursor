@@ -1,7 +1,8 @@
 import { describe, it, expect } from "bun:test";
-import { ToolRegistry } from "../../src/tools/registry.js";
+import { ToolRegistry } from "../../src/tools/core/registry.js";
 import { registerDefaultTools, getDefaultToolNames } from "../../src/tools/defaults.js";
-import { ToolExecutor } from "../../src/tools/executor.js";
+import { executeWithChain } from "../../src/tools/core/executor.js";
+import { LocalExecutor } from "../../src/tools/executors/local.js";
 
 describe("Default Tools", () => {
   it("should register all 7 default tools", () => {
@@ -12,7 +13,8 @@ describe("Default Tools", () => {
     expect(toolNames).toHaveLength(7);
 
     for (const name of toolNames) {
-      expect(registry.has(name)).toBe(true);
+      const tool = registry.getTool(name);
+      expect(tool).toBeDefined();
     }
   });
 
@@ -20,55 +22,57 @@ describe("Default Tools", () => {
     const registry = new ToolRegistry();
     registerDefaultTools(registry);
 
-    const bash = registry.get("bash");
-    expect(bash?.definition.function.name).toBe("bash");
-    expect(bash?.definition.function.parameters.required).toContain("command");
+    const bash = registry.getTool("bash");
+    expect(bash?.name).toBe("bash");
+    expect(bash?.parameters.required).toContain("command");
 
-    const read = registry.get("read");
-    expect(read?.definition.function.name).toBe("read");
-    expect(read?.definition.function.parameters.required).toContain("path");
+    const read = registry.getTool("read");
+    expect(read?.name).toBe("read");
+    expect(read?.parameters.required).toContain("path");
 
-    const write = registry.get("write");
-    expect(write?.definition.function.name).toBe("write");
+    const write = registry.getTool("write");
+    expect(write?.name).toBe("write");
 
-    const edit = registry.get("edit");
-    expect(edit?.definition.function.name).toBe("edit");
+    const edit = registry.getTool("edit");
+    expect(edit?.name).toBe("edit");
 
-    const grep = registry.get("grep");
-    expect(grep?.definition.function.name).toBe("grep");
+    const grep = registry.getTool("grep");
+    expect(grep?.name).toBe("grep");
 
-    const ls = registry.get("ls");
-    expect(ls?.definition.function.name).toBe("ls");
+    const ls = registry.getTool("ls");
+    expect(ls?.name).toBe("ls");
 
-    const glob = registry.get("glob");
-    expect(glob?.definition.function.name).toBe("glob");
+    const glob = registry.getTool("glob");
+    expect(glob?.name).toBe("glob");
   });
 
   it("should execute ls tool", async () => {
     const registry = new ToolRegistry();
     registerDefaultTools(registry);
-    const executor = new ToolExecutor(registry);
+    const executor = new LocalExecutor(registry);
 
-    const result = await executor.execute("ls", { path: "." });
+    const result = await executeWithChain([executor], "ls", { path: "." });
 
     // Should list current directory contents
-    expect(typeof result).toBe("string");
-    expect(result.length).toBeGreaterThan(0);
+    expect(result.status).toBe("success");
+    expect(result.output).toBeDefined();
+    expect(result.output!.length).toBeGreaterThan(0);
   });
 
   it("should execute read tool", async () => {
     const registry = new ToolRegistry();
     registerDefaultTools(registry);
-    const executor = new ToolExecutor(registry);
+    const executor = new LocalExecutor(registry);
 
     // Create a temp file to read
     const fs = await import("fs");
     const tmpFile = `/tmp/test-read-${Date.now()}.txt`;
     fs.writeFileSync(tmpFile, "Hello, World!", "utf-8");
 
-    const result = await executor.execute("read", { path: tmpFile });
+    const result = await executeWithChain([executor], "read", { path: tmpFile });
 
-    expect(result).toBe("Hello, World!");
+    expect(result.status).toBe("success");
+    expect(result.output).toBe("Hello, World!");
 
     // Cleanup
     fs.unlinkSync(tmpFile);
@@ -77,20 +81,22 @@ describe("Default Tools", () => {
   it("should execute write and read tools together", async () => {
     const registry = new ToolRegistry();
     registerDefaultTools(registry);
-    const executor = new ToolExecutor(registry);
+    const executor = new LocalExecutor(registry);
 
     const tmpFile = `/tmp/test-write-${Date.now()}.txt`;
 
     // Write
-    const writeResult = await executor.execute("write", {
+    const writeResult = await executeWithChain([executor], "write", {
       path: tmpFile,
       content: "Test content"
     });
-    expect(writeResult).toContain("written successfully");
+    expect(writeResult.status).toBe("success");
+    expect(writeResult.output).toContain("written successfully");
 
     // Read back
-    const readResult = await executor.execute("read", { path: tmpFile });
-    expect(readResult).toBe("Test content");
+    const readResult = await executeWithChain([executor], "read", { path: tmpFile });
+    expect(readResult.status).toBe("success");
+    expect(readResult.output).toBe("Test content");
 
     // Cleanup
     const fs = await import("fs");
@@ -100,19 +106,20 @@ describe("Default Tools", () => {
   it("should execute edit tool", async () => {
     const registry = new ToolRegistry();
     registerDefaultTools(registry);
-    const executor = new ToolExecutor(registry);
+    const executor = new LocalExecutor(registry);
 
     const fs = await import("fs");
     const tmpFile = `/tmp/test-edit-${Date.now()}.txt`;
     fs.writeFileSync(tmpFile, "Hello, World!", "utf-8");
 
-    const result = await executor.execute("edit", {
+    const result = await executeWithChain([executor], "edit", {
       path: tmpFile,
       old_string: "World",
       new_string: "Universe"
     });
 
-    expect(result).toContain("edited successfully");
+    expect(result.status).toBe("success");
+    expect(result.output).toContain("edited successfully");
 
     const content = fs.readFileSync(tmpFile, "utf-8");
     expect(content).toBe("Hello, Universe!");
@@ -125,14 +132,14 @@ describe("Default Tools", () => {
     const registry = new ToolRegistry();
     registerDefaultTools(registry);
 
-    const definitions = registry.getAllDefinitions();
-    expect(definitions).toHaveLength(7);
+    const tools = registry.list();
+    expect(tools).toHaveLength(7);
 
-    // All should be function types
-    for (const def of definitions) {
-      expect(def.type).toBe("function");
-      expect(def.function.name).toBeDefined();
-      expect(def.function.description).toBeDefined();
+    // All should have required fields
+    for (const tool of tools) {
+      expect(tool.name).toBeDefined();
+      expect(tool.description).toBeDefined();
+      expect(tool.source).toBe("local");
     }
   });
 });
