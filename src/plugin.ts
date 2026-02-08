@@ -819,7 +819,8 @@ function buildToolHookEntries(registry: CoreRegistry): Record<string, any> {
         try {
           return await handler(args);
         } catch (error: any) {
-          return `Error: ${error.message || String(error)}`;
+          log.warn("Tool hook execution failed", { tool: t.name, error: String(error?.message || error) });
+          throw error;
         }
       },
     });
