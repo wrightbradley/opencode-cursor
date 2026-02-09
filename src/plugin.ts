@@ -318,7 +318,7 @@ async function ensureCursorProxyServer(workspaceDirectory: string, toolRouter?: 
                   }
 
                   // Handle OpenCode tools
-                  if (toolRouter && forwardToolCalls) {
+                  if (toolRouter && FORWARD_TOOL_CALLS) {
                     const toolResult = await toolRouter.handleToolCall(event as any, { id, created, model });
                     if (toolResult) {
                       controller.enqueue(encoder.encode(`data: ${JSON.stringify(toolResult)}\n\n`));
@@ -558,7 +558,7 @@ async function ensureCursorProxyServer(workspaceDirectory: string, toolRouter?: 
                 }
               }
 
-              if (toolRouter && forwardToolCalls) {
+              if (toolRouter && FORWARD_TOOL_CALLS) {
                 const toolResult = await toolRouter.handleToolCall(event as any, { id, created, model });
                 if (toolResult) {
                   res.write(`data: ${JSON.stringify(toolResult)}\n\n`);
@@ -594,7 +594,7 @@ async function ensureCursorProxyServer(workspaceDirectory: string, toolRouter?: 
                 }
               }
 
-              if (toolRouter && forwardToolCalls) {
+              if (toolRouter && FORWARD_TOOL_CALLS) {
                 const toolResult = await toolRouter.handleToolCall(event as any, { id, created, model });
                 if (toolResult) {
                   res.write(`data: ${JSON.stringify(toolResult)}\n\n`);
@@ -796,7 +796,7 @@ export const CursorPlugin: Plugin = async ({ $, directory, client, serverUrl }: 
 
   // Tools (skills) discovery/execution wiring
   const toolsEnabled = process.env.CURSOR_ACP_ENABLE_OPENCODE_TOOLS !== "false"; // default ON
-  const forwardToolCalls = process.env.CURSOR_ACP_FORWARD_TOOL_CALLS !== "false"; // default ON
+  // forwardToolCalls uses the module-level FORWARD_TOOL_CALLS constant (line 53)
   // Build a client with serverUrl so SDK tool.list works even if the injected client isn't fully configured.
   const serverClient = toolsEnabled
     ? createOpencodeClient({ serverUrl: serverUrl.toString(), directory })
@@ -840,10 +840,12 @@ export const CursorPlugin: Plugin = async ({ $, directory, client, serverUrl }: 
     const skills = skillLoader.load(list);
     skillResolver = new SkillResolver(skills);
 
-    // Populate MCP executor with discovered SDK tool IDs
+    // Populate executors with their respective tool IDs
+    if (sdkExec) {
+      sdkExec.setToolIds(list.filter((t) => t.source === "sdk").map((t) => t.id));
+    }
     if (mcpExec) {
-      const sdkToolIds = list.filter((t) => t.source === "sdk").map((t) => t.id);
-      mcpExec.setToolIds(sdkToolIds);
+      mcpExec.setToolIds(list.filter((t) => t.source === "mcp").map((t) => t.id));
     }
 
     const toolEntries: any[] = [];
