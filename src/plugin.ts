@@ -12,6 +12,7 @@ import { parseStreamJsonLine } from "./streaming/parser.js";
 import { extractText, extractThinking, isAssistantText, isThinking } from "./streaming/types.js";
 import { createLogger } from "./utils/logger";
 import { parseAgentError, formatErrorForUser, stripAnsi } from "./utils/errors";
+import { buildPromptFromMessages } from "./proxy/prompt-builder.js";
 import { OpenCodeToolDiscovery } from "./tools/discovery.js";
 import { toOpenAiParameters, describeTool } from "./tools/schema.js";
 import { ToolRouter } from "./tools/router.js";
@@ -206,29 +207,7 @@ async function ensureCursorProxyServer(workspaceDirectory: string, toolRouter?: 
         const stream = body?.stream === true;
         const tools = Array.isArray(body?.tools) ? body.tools : [];
 
-      // Convert messages to prompt
-      const lines: string[] = [];
-      for (const message of messages) {
-        const role = typeof message.role === "string" ? message.role : "user";
-        const content = message.content;
-
-        if (typeof content === "string") {
-          lines.push(`${role.toUpperCase()}: ${content}`);
-        } else if (Array.isArray(content)) {
-          const textParts = content
-            .map((part: any) => {
-              if (part && typeof part === "object" && part.type === "text" && typeof part.text === "string") {
-                return part.text;
-              }
-              return "";
-            })
-            .filter(Boolean);
-          if (textParts.length) {
-            lines.push(`${role.toUpperCase()}: ${textParts.join("\n")}`);
-          }
-        }
-      }
-      const prompt = lines.join("\n\n");
+      const prompt = buildPromptFromMessages(messages, tools);
       const model = typeof body?.model === "string" ? body.model : "auto";
 
       const bunAny = globalThis as any;
@@ -487,30 +466,9 @@ async function ensureCursorProxyServer(workspaceDirectory: string, toolRouter?: 
       const bodyData: any = JSON.parse(body || "{}");
       const messages: Array<any> = Array.isArray(bodyData?.messages) ? bodyData.messages : [];
       const stream = bodyData?.stream === true;
+      const tools = Array.isArray(bodyData?.tools) ? bodyData.tools : [];
 
-      // Convert messages to prompt
-      const lines: string[] = [];
-      for (const message of messages) {
-        const role = typeof message.role === "string" ? message.role : "user";
-        const content = message.content;
-
-        if (typeof content === "string") {
-          lines.push(`${role.toUpperCase()}: ${content}`);
-        } else if (Array.isArray(content)) {
-          const textParts = content
-            .map((part: any) => {
-              if (part && typeof part === "object" && part.type === "text" && typeof part.text === "string") {
-                return part.text;
-              }
-              return "";
-            })
-            .filter(Boolean);
-          if (textParts.length) {
-            lines.push(`${role.toUpperCase()}: ${textParts.join("\n")}`);
-          }
-        }
-      }
-      const prompt = lines.join("\n\n");
+      const prompt = buildPromptFromMessages(messages, tools);
       const model = typeof bodyData?.model === "string" ? bodyData.model : "auto";
 
       const cmd = [
