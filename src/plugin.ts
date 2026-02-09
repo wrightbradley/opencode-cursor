@@ -13,6 +13,13 @@ import { extractText, extractThinking, isAssistantText, isThinking } from "./str
 import { createLogger } from "./utils/logger";
 import { parseAgentError, formatErrorForUser, stripAnsi } from "./utils/errors";
 import { buildPromptFromMessages } from "./proxy/prompt-builder.js";
+import {
+  createToolCallCompletionResponse,
+  createToolCallStreamChunks,
+  extractAllowedToolNames,
+  extractOpenAiToolCall,
+  type OpenAiToolCall,
+} from "./proxy/tool-loop.js";
 import { OpenCodeToolDiscovery } from "./tools/discovery.js";
 import { toOpenAiParameters, describeTool } from "./tools/schema.js";
 import { ToolRouter } from "./tools/router.js";
@@ -51,6 +58,51 @@ function getGlobalKey(): string {
 const FORCE_TOOL_MODE = process.env.CURSOR_ACP_FORCE !== "false";
 const EMIT_TOOL_UPDATES = process.env.CURSOR_ACP_EMIT_TOOL_UPDATES === "true";
 const FORWARD_TOOL_CALLS = process.env.CURSOR_ACP_FORWARD_TOOL_CALLS !== "false";
+type ToolLoopMode = "opencode" | "proxy-exec" | "off";
+
+function parseToolLoopMode(value: string | undefined): { mode: ToolLoopMode; valid: boolean } {
+  const normalized = (value ?? "opencode").trim().toLowerCase();
+  if (normalized === "opencode" || normalized === "proxy-exec" || normalized === "off") {
+    return { mode: normalized, valid: true };
+  }
+  return { mode: "opencode", valid: false };
+}
+
+const TOOL_LOOP_MODE_RAW = process.env.CURSOR_ACP_TOOL_LOOP_MODE;
+const { mode: TOOL_LOOP_MODE, valid: TOOL_LOOP_MODE_VALID } = parseToolLoopMode(TOOL_LOOP_MODE_RAW);
+const PROXY_EXECUTE_TOOL_CALLS = TOOL_LOOP_MODE === "proxy-exec" && FORWARD_TOOL_CALLS;
+const SUPPRESS_CONVERTER_TOOL_EVENTS = TOOL_LOOP_MODE === "proxy-exec" && !FORWARD_TOOL_CALLS;
+const SHOULD_EMIT_TOOL_UPDATES = EMIT_TOOL_UPDATES && TOOL_LOOP_MODE === "proxy-exec";
+
+type ToolOptionResolution = {
+  tools: unknown;
+  action: "preserve" | "fallback" | "override" | "none";
+};
+
+export function resolveChatParamTools(
+  mode: ToolLoopMode,
+  existingTools: unknown,
+  refreshedTools: Array<any>,
+): ToolOptionResolution {
+  if (mode === "proxy-exec") {
+    if (refreshedTools.length > 0) {
+      return { tools: refreshedTools, action: "override" };
+    }
+    return { tools: existingTools, action: "none" };
+  }
+
+  if (mode === "opencode") {
+    if (existingTools != null) {
+      return { tools: existingTools, action: "preserve" };
+    }
+    if (refreshedTools.length > 0) {
+      return { tools: refreshedTools, action: "fallback" };
+    }
+    return { tools: existingTools, action: "none" };
+  }
+
+  return { tools: existingTools, action: "none" };
+}
 
 function createChatCompletionResponse(model: string, content: string, reasoningContent?: string) {
   const message: { role: "assistant"; content: string; reasoning_content?: string } = {
@@ -133,6 +185,29 @@ function formatToolUpdateEvent(update: ToolUpdate): string {
   return `event: tool_update\ndata: ${JSON.stringify(update)}\n\n`;
 }
 
+function findFirstAllowedToolCallInOutput(
+  output: string,
+  allowedToolNames: Set<string>,
+): OpenAiToolCall | null {
+  if (allowedToolNames.size === 0 || !output) {
+    return null;
+  }
+
+  for (const line of output.split("\n")) {
+    const event = parseStreamJsonLine(line);
+    if (!event || event.type !== "tool_call") {
+      continue;
+    }
+
+    const toolCall = extractOpenAiToolCall(event as any, allowedToolNames);
+    if (toolCall) {
+      return toolCall;
+    }
+  }
+
+  return null;
+}
+
 async function ensureCursorProxyServer(workspaceDirectory: string, toolRouter?: ToolRouter): Promise<string> {
   const key = getGlobalKey();
   const g = globalThis as any;
@@ -206,6 +281,7 @@ async function ensureCursorProxyServer(workspaceDirectory: string, toolRouter?: 
         const messages: Array<any> = Array.isArray(body?.messages) ? body.messages : [];
         const stream = body?.stream === true;
         const tools = Array.isArray(body?.tools) ? body.tools : [];
+        const allowedToolNames = extractAllowedToolNames(tools);
 
       const prompt = buildPromptFromMessages(messages, tools);
       const model = typeof body?.model === "string" ? body.model : "auto";
@@ -253,6 +329,25 @@ async function ensureCursorProxyServer(workspaceDirectory: string, toolRouter?: 
 
         const stdout = (stdoutText || "").trim();
         const stderr = (stderrText || "").trim();
+        if (TOOL_LOOP_MODE === "opencode") {
+          const toolCall = findFirstAllowedToolCallInOutput(stdout, allowedToolNames);
+          if (toolCall) {
+            log.debug("Intercepted OpenCode tool call (non-stream)", {
+              name: toolCall.function.name,
+              callId: toolCall.id,
+            });
+            const meta = {
+              id: `cursor-acp-${Date.now()}`,
+              created: Math.floor(Date.now() / 1000),
+              model,
+            };
+            const payload = createToolCallCompletionResponse(meta, toolCall);
+            return new Response(JSON.stringify(payload), {
+              status: 200,
+              headers: { "Content-Type": "application/json" },
+            });
+          }
+        }
 
         // cursor-agent sometimes returns non-zero even with usable stdout.
         // Treat stdout as success unless we have explicit stderr.
@@ -289,18 +384,36 @@ async function ensureCursorProxyServer(workspaceDirectory: string, toolRouter?: 
 
       const sse = new ReadableStream({
         async start(controller) {
-          let closed = false;
+          let streamTerminated = false;
           try {
             const reader = (child.stdout as ReadableStream<Uint8Array>).getReader();
             const converter = new StreamToSseConverter(model, { id, created });
             const lineBuffer = new LineBuffer();
+            const emitToolCallAndTerminate = (toolCall: OpenAiToolCall) => {
+              log.debug("Intercepted OpenCode tool call (stream)", {
+                name: toolCall.function.name,
+                callId: toolCall.id,
+              });
+              for (const chunk of createToolCallStreamChunks({ id, created, model }, toolCall)) {
+                controller.enqueue(encoder.encode(`data: ${JSON.stringify(chunk)}\n\n`));
+              }
+              controller.enqueue(encoder.encode(formatSseDone()));
+              streamTerminated = true;
+              try {
+                child.kill();
+              } catch {
+                // ignore
+              }
+            };
 
             while (true) {
+              if (streamTerminated) break;
               const { value, done } = await reader.read();
               if (done) break;
               if (!value || value.length === 0) continue;
 
               for (const line of lineBuffer.push(value)) {
+                if (streamTerminated) break;
                 const event = parseStreamJsonLine(line);
                 if (!event) {
                   continue;
@@ -311,21 +424,29 @@ async function ensureCursorProxyServer(workspaceDirectory: string, toolRouter?: 
                     event,
                     event.session_id ?? toolSessionId,
                   );
-                  if (EMIT_TOOL_UPDATES) {
+                  if (SHOULD_EMIT_TOOL_UPDATES) {
                     for (const update of updates) {
                       controller.enqueue(encoder.encode(formatToolUpdateEvent(update)));
                     }
                   }
 
+                  if (TOOL_LOOP_MODE === "opencode") {
+                    const toolCall = extractOpenAiToolCall(event as any, allowedToolNames);
+                    if (toolCall) {
+                      emitToolCallAndTerminate(toolCall);
+                      break;
+                    }
+                  }
+
                   // Handle OpenCode tools
-                  if (toolRouter && FORWARD_TOOL_CALLS) {
+                  if (toolRouter && PROXY_EXECUTE_TOOL_CALLS) {
                     const toolResult = await toolRouter.handleToolCall(event as any, { id, created, model });
                     if (toolResult) {
                       controller.enqueue(encoder.encode(`data: ${JSON.stringify(toolResult)}\n\n`));
                     }
                   }
 
-                  if (!FORWARD_TOOL_CALLS) {
+                  if (SUPPRESS_CONVERTER_TOOL_EVENTS) {
                     continue;
                   }
                 }
@@ -335,8 +456,12 @@ async function ensureCursorProxyServer(workspaceDirectory: string, toolRouter?: 
                 }
               }
             }
+            if (streamTerminated) {
+              return;
+            }
 
             for (const line of lineBuffer.flush()) {
+              if (streamTerminated) break;
               const event = parseStreamJsonLine(line);
               if (!event) {
                 continue;
@@ -346,19 +471,37 @@ async function ensureCursorProxyServer(workspaceDirectory: string, toolRouter?: 
                   event,
                   event.session_id ?? toolSessionId,
                 );
-                if (EMIT_TOOL_UPDATES) {
+                if (SHOULD_EMIT_TOOL_UPDATES) {
                   for (const update of updates) {
                     controller.enqueue(encoder.encode(formatToolUpdateEvent(update)));
                   }
                 }
 
-                if (!FORWARD_TOOL_CALLS) {
+                if (TOOL_LOOP_MODE === "opencode") {
+                  const toolCall = extractOpenAiToolCall(event as any, allowedToolNames);
+                  if (toolCall) {
+                    emitToolCallAndTerminate(toolCall);
+                    break;
+                  }
+                }
+
+                if (toolRouter && PROXY_EXECUTE_TOOL_CALLS) {
+                  const toolResult = await toolRouter.handleToolCall(event as any, { id, created, model });
+                  if (toolResult) {
+                    controller.enqueue(encoder.encode(`data: ${JSON.stringify(toolResult)}\n\n`));
+                  }
+                }
+
+                if (SUPPRESS_CONVERTER_TOOL_EVENTS) {
                   continue;
                 }
               }
               for (const sse of converter.handleEvent(event)) {
                 controller.enqueue(encoder.encode(sse));
               }
+            }
+            if (streamTerminated) {
+              return;
             }
 
             if (child.exitCode !== 0) {
@@ -376,7 +519,6 @@ async function ensureCursorProxyServer(workspaceDirectory: string, toolRouter?: 
             controller.enqueue(encoder.encode(`data: ${JSON.stringify(doneChunk)}\n\n`));
             controller.enqueue(encoder.encode(formatSseDone()));
           } finally {
-            closed = true;
             controller.close();
           }
         },
@@ -467,6 +609,7 @@ async function ensureCursorProxyServer(workspaceDirectory: string, toolRouter?: 
       const messages: Array<any> = Array.isArray(bodyData?.messages) ? bodyData.messages : [];
       const stream = bodyData?.stream === true;
       const tools = Array.isArray(bodyData?.tools) ? bodyData.tools : [];
+      const allowedToolNames = extractAllowedToolNames(tools);
 
       const prompt = buildPromptFromMessages(messages, tools);
       const model = typeof bodyData?.model === "string" ? bodyData.model : "auto";
@@ -502,6 +645,25 @@ async function ensureCursorProxyServer(workspaceDirectory: string, toolRouter?: 
         child.on("close", async (code) => {
           const stdout = Buffer.concat(stdoutChunks).toString().trim();
           const stderr = Buffer.concat(stderrChunks).toString().trim();
+          if (TOOL_LOOP_MODE === "opencode") {
+            const toolCall = findFirstAllowedToolCallInOutput(stdout, allowedToolNames);
+            if (toolCall) {
+              log.debug("Intercepted OpenCode tool call (non-stream)", {
+                name: toolCall.function.name,
+                callId: toolCall.id,
+              });
+              const meta = {
+                id: `cursor-acp-${Date.now()}`,
+                created: Math.floor(Date.now() / 1000),
+                model,
+              };
+              const payload = createToolCallCompletionResponse(meta, toolCall);
+              res.writeHead(200, { "Content-Type": "application/json" });
+              res.end(JSON.stringify(payload));
+              return;
+            }
+          }
+
           const completion = extractCompletionFromStream(stdout);
 
           if (code !== 0 && stderr.length > 0) {
@@ -539,9 +701,36 @@ async function ensureCursorProxyServer(workspaceDirectory: string, toolRouter?: 
         const lineBuffer = new LineBuffer();
         const toolMapper = new ToolMapper();
         const toolSessionId = id;
+        let streamTerminated = false;
+        const emitToolCallAndTerminate = (toolCall: OpenAiToolCall) => {
+          if (streamTerminated || res.writableEnded) {
+            return;
+          }
+          log.debug("Intercepted OpenCode tool call (stream)", {
+            name: toolCall.function.name,
+            callId: toolCall.id,
+          });
+          for (const chunk of createToolCallStreamChunks({ id, created, model }, toolCall)) {
+            res.write(`data: ${JSON.stringify(chunk)}\n\n`);
+          }
+          res.write(formatSseDone());
+          streamTerminated = true;
+          res.end();
+          try {
+            child.kill();
+          } catch {
+            // ignore
+          }
+        };
 
         child.stdout.on("data", async (chunk) => {
+          if (streamTerminated || res.writableEnded) {
+            return;
+          }
           for (const line of lineBuffer.push(chunk)) {
+            if (streamTerminated || res.writableEnded) {
+              break;
+            }
             const event = parseStreamJsonLine(line);
             if (!event) {
               continue;
@@ -552,24 +741,35 @@ async function ensureCursorProxyServer(workspaceDirectory: string, toolRouter?: 
                 event,
                 event.session_id ?? toolSessionId,
               );
-              if (EMIT_TOOL_UPDATES) {
+              if (SHOULD_EMIT_TOOL_UPDATES) {
                 for (const update of updates) {
                   res.write(formatToolUpdateEvent(update));
                 }
               }
 
-              if (toolRouter && FORWARD_TOOL_CALLS) {
+              if (TOOL_LOOP_MODE === "opencode") {
+                const toolCall = extractOpenAiToolCall(event as any, allowedToolNames);
+                if (toolCall) {
+                  emitToolCallAndTerminate(toolCall);
+                  break;
+                }
+              }
+
+              if (toolRouter && PROXY_EXECUTE_TOOL_CALLS) {
                 const toolResult = await toolRouter.handleToolCall(event as any, { id, created, model });
                 if (toolResult) {
                   res.write(`data: ${JSON.stringify(toolResult)}\n\n`);
                 }
               }
 
-              if (!FORWARD_TOOL_CALLS) {
+              if (SUPPRESS_CONVERTER_TOOL_EVENTS) {
                 continue;
               }
             }
 
+            if (streamTerminated || res.writableEnded) {
+              break;
+            }
             for (const sse of converter.handleEvent(event)) {
               res.write(sse);
             }
@@ -577,7 +777,13 @@ async function ensureCursorProxyServer(workspaceDirectory: string, toolRouter?: 
         });
 
         child.on("close", async (code) => {
+          if (streamTerminated || res.writableEnded) {
+            return;
+          }
           for (const line of lineBuffer.flush()) {
+            if (streamTerminated || res.writableEnded) {
+              break;
+            }
             const event = parseStreamJsonLine(line);
             if (!event) {
               continue;
@@ -588,31 +794,48 @@ async function ensureCursorProxyServer(workspaceDirectory: string, toolRouter?: 
                 event,
                 event.session_id ?? toolSessionId,
               );
-              if (EMIT_TOOL_UPDATES) {
+              if (SHOULD_EMIT_TOOL_UPDATES) {
                 for (const update of updates) {
                   res.write(formatToolUpdateEvent(update));
                 }
               }
 
-              if (toolRouter && FORWARD_TOOL_CALLS) {
+              if (TOOL_LOOP_MODE === "opencode") {
+                const toolCall = extractOpenAiToolCall(event as any, allowedToolNames);
+                if (toolCall) {
+                  emitToolCallAndTerminate(toolCall);
+                  break;
+                }
+              }
+
+              if (toolRouter && PROXY_EXECUTE_TOOL_CALLS) {
                 const toolResult = await toolRouter.handleToolCall(event as any, { id, created, model });
                 if (toolResult) {
                   res.write(`data: ${JSON.stringify(toolResult)}\n\n`);
                 }
               }
 
-              if (!FORWARD_TOOL_CALLS) {
+              if (SUPPRESS_CONVERTER_TOOL_EVENTS) {
                 continue;
               }
             }
 
+            if (streamTerminated || res.writableEnded) {
+              break;
+            }
             for (const sse of converter.handleEvent(event)) {
               res.write(sse);
             }
           }
+          if (streamTerminated || res.writableEnded) {
+            return;
+          }
 
           if (code !== 0) {
             child.stderr.on("data", (chunk) => {
+              if (streamTerminated || res.writableEnded) {
+                return;
+              }
               const errChunk = {
                 id,
                 object: "chat.completion.chunk",
@@ -655,7 +878,7 @@ async function ensureCursorProxyServer(workspaceDirectory: string, toolRouter?: 
     }
   };
 
-  const server = http.createServer(requestHandler);
+  let server = http.createServer(requestHandler);
 
   // Try to start on default port
   try {
@@ -684,6 +907,7 @@ async function ensureCursorProxyServer(workspaceDirectory: string, toolRouter?: 
     }
 
     // Start on random port
+    server = http.createServer(requestHandler);
     await new Promise<void>((resolve, reject) => {
       server.listen(0, CURSOR_PROXY_HOST, () => resolve());
       server.once("error", reject);
@@ -792,16 +1016,29 @@ function buildToolHookEntries(registry: CoreRegistry): Record<string, any> {
  */
 export const CursorPlugin: Plugin = async ({ $, directory, client, serverUrl }: PluginInput) => {
   log.debug("Plugin initializing", { directory, serverUrl: serverUrl?.toString() });
+  if (!TOOL_LOOP_MODE_VALID) {
+    log.warn("Invalid CURSOR_ACP_TOOL_LOOP_MODE; defaulting to opencode", { value: TOOL_LOOP_MODE_RAW });
+  }
+  log.info("Tool loop mode configured", {
+    mode: TOOL_LOOP_MODE,
+    proxyExecToolCalls: PROXY_EXECUTE_TOOL_CALLS,
+  });
   await ensurePluginDirectory();
 
   // Tools (skills) discovery/execution wiring
   const toolsEnabled = process.env.CURSOR_ACP_ENABLE_OPENCODE_TOOLS !== "false"; // default ON
-  // forwardToolCalls uses the module-level FORWARD_TOOL_CALLS constant (line 53)
+  const legacyProxyToolPathsEnabled = toolsEnabled && TOOL_LOOP_MODE === "proxy-exec";
+  if (toolsEnabled && TOOL_LOOP_MODE === "opencode") {
+    log.debug("OpenCode mode active; skipping legacy SDK/MCP discovery and proxy-side tool execution");
+  } else if (toolsEnabled && TOOL_LOOP_MODE === "off") {
+    log.debug("Tool loop mode off; proxy-side tool execution disabled");
+  }
+  // FORWARD_TOOL_CALLS is only used when TOOL_LOOP_MODE=proxy-exec.
   // Build a client with serverUrl so SDK tool.list works even if the injected client isn't fully configured.
-  const serverClient = toolsEnabled
+  const serverClient = legacyProxyToolPathsEnabled
     ? createOpencodeClient({ baseUrl: serverUrl.toString(), directory })
     : null;
-  const discovery = toolsEnabled ? new OpenCodeToolDiscovery(serverClient ?? client) : null;
+  const discovery = legacyProxyToolPathsEnabled ? new OpenCodeToolDiscovery(serverClient ?? client) : null;
 
   // Build executor chain: Local -> SDK -> MCP
   const localRegistry = new CoreRegistry();
@@ -809,8 +1046,8 @@ export const CursorPlugin: Plugin = async ({ $, directory, client, serverUrl }: 
 
   const timeoutMs = Number(process.env.CURSOR_ACP_TOOL_TIMEOUT_MS || 30000);
   const localExec = new LocalExecutor(localRegistry);
-  const sdkExec = toolsEnabled ? new SdkExecutor(serverClient ?? client, timeoutMs) : null;
-  const mcpExec = toolsEnabled ? new McpExecutor(serverClient ?? client, timeoutMs) : null;
+  const sdkExec = legacyProxyToolPathsEnabled ? new SdkExecutor(serverClient ?? client, timeoutMs) : null;
+  const mcpExec = legacyProxyToolPathsEnabled ? new McpExecutor(serverClient ?? client, timeoutMs) : null;
 
   const executorChain: IToolExecutor[] = [localExec];
   if (sdkExec) executorChain.push(sdkExec);
@@ -820,7 +1057,7 @@ export const CursorPlugin: Plugin = async ({ $, directory, client, serverUrl }: 
   const skillLoader = new SkillLoader();
   let skillResolver: SkillResolver | null = null;
 
-  const router = toolsEnabled
+  const router = legacyProxyToolPathsEnabled
     ? new ToolRouter({
         execute: (toolId, args) => executeWithChain(executorChain, toolId, args),
         toolsByName,
@@ -831,7 +1068,6 @@ export const CursorPlugin: Plugin = async ({ $, directory, client, serverUrl }: 
   let lastToolMap: Array<{ id: string; name: string }> = [];
 
   async function refreshTools() {
-    if (!router) return [];
     toolsByName.clear();
 
     const toolEntries: any[] = [];
@@ -850,9 +1086,9 @@ export const CursorPlugin: Plugin = async ({ $, directory, client, serverUrl }: 
     };
 
     // Always include local tools — these work regardless of SDK connectivity
-    for (const t of localRegistry.list()) {
-      const nsName = `oc_${t.id}`;
-      const asTool = { ...t, name: nsName };
+    const localTools = localRegistry.list().map((t) => ({ ...t, name: `oc_${t.id}` }));
+    for (const asTool of localTools) {
+      const nsName = asTool.name;
       add(nsName, asTool);
     }
 
@@ -868,7 +1104,7 @@ export const CursorPlugin: Plugin = async ({ $, directory, client, serverUrl }: 
     }
 
     // Load skills and initialize resolver for alias resolution
-    const allTools = [...localRegistry.list().map((t) => ({ ...t, name: `oc_${t.id}` })), ...discoveredList];
+    const allTools = [...localTools, ...discoveredList];
     const skills = skillLoader.load(allTools);
     skillResolver = new SkillResolver(skills);
 
@@ -898,7 +1134,7 @@ export const CursorPlugin: Plugin = async ({ $, directory, client, serverUrl }: 
 
     lastToolNames = toolEntries.map((e) => e.function.name);
     lastToolMap = allTools.map((t) => ({ id: t.id, name: t.name }));
-    log.debug("Tools refreshed", { local: localRegistry.list().length, discovered: discoveredList.length, total: toolEntries.length });
+    log.debug("Tools refreshed", { local: localTools.length, discovered: discoveredList.length, total: toolEntries.length });
     return toolEntries;
   }
 
@@ -949,12 +1185,23 @@ export const CursorPlugin: Plugin = async ({ $, directory, client, serverUrl }: 
       output.options.baseURL = proxyBaseURL || CURSOR_PROXY_DEFAULT_BASE_URL;
       output.options.apiKey = output.options.apiKey || "cursor-agent";
 
-      // Inject OpenCode tools/skills for the model to call (optional)
+      // Tool definitions handling:
+      // - proxy-exec mode: provider injects tool definitions directly.
+      // - opencode mode: preserve OpenCode-provided tools, fallback only when absent.
       if (toolsEnabled) {
         try {
-          const toolDefs = await refreshTools();
-          if (toolDefs.length) {
-            output.options.tools = toolDefs;
+          const existingTools = output.options.tools;
+          const shouldRefresh =
+            TOOL_LOOP_MODE === "proxy-exec"
+            || (TOOL_LOOP_MODE === "opencode" && existingTools == null);
+          const refreshedTools = shouldRefresh ? await refreshTools() : [];
+          const resolved = resolveChatParamTools(TOOL_LOOP_MODE, existingTools, refreshedTools);
+
+          if (resolved.action === "override" || resolved.action === "fallback") {
+            output.options.tools = resolved.tools;
+          } else if (resolved.action === "preserve") {
+            const count = Array.isArray(existingTools) ? existingTools.length : 0;
+            log.debug("Using OpenCode-provided tools from chat.params", { count });
           }
         } catch (err) {
           log.debug("Failed to refresh tools", { error: String(err) });

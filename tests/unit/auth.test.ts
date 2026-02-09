@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach, mock } from "bun:test";
+import { describe, it, expect, beforeEach, afterEach, afterAll, mock } from "bun:test";
 import { existsSync, writeFileSync, unlinkSync, mkdirSync } from "fs";
 import { homedir } from "os";
 import { join } from "path";
@@ -6,27 +6,43 @@ import { pollForAuthFile, verifyCursorAuth, getAuthFilePath, getPossibleAuthPath
 
 const TEST_TIMEOUT = 10000;
 const TEST_AUTH_DIR = join(homedir(), ".config", "cursor");
-const TEST_AUTH_FILE = join(TEST_AUTH_DIR, "auth.json");
 const TEST_CLI_CONFIG_DIR = join(homedir(), ".cursor");
-const TEST_CLI_CONFIG_FILE = join(TEST_CLI_CONFIG_DIR, "cli-config.json");
+const TEST_CONFIG_AUTH_FILE = join(TEST_AUTH_DIR, "auth.json");
+const TEST_CONFIG_CLI_CONFIG_FILE = join(TEST_AUTH_DIR, "cli-config.json");
+const TEST_CURSOR_CLI_CONFIG_FILE = join(TEST_CLI_CONFIG_DIR, "cli-config.json");
+const TEST_CURSOR_AUTH_FILE = join(TEST_CLI_CONFIG_DIR, "auth.json");
+const ORIGINAL_XDG_CONFIG_HOME = process.env.XDG_CONFIG_HOME;
 
 describe("Auth Module", () => {
+  const cleanupAuthFiles = () => {
+    const files = [
+      TEST_CONFIG_AUTH_FILE,
+      TEST_CONFIG_CLI_CONFIG_FILE,
+      TEST_CURSOR_CLI_CONFIG_FILE,
+      TEST_CURSOR_AUTH_FILE,
+    ];
+    for (const file of files) {
+      if (existsSync(file)) {
+        unlinkSync(file);
+      }
+    }
+  };
+
   beforeEach(() => {
-    if (existsSync(TEST_AUTH_FILE)) {
-      unlinkSync(TEST_AUTH_FILE);
-    }
-    if (existsSync(TEST_CLI_CONFIG_FILE)) {
-      unlinkSync(TEST_CLI_CONFIG_FILE);
-    }
+    process.env.XDG_CONFIG_HOME = join(homedir(), ".config");
+    cleanupAuthFiles();
   });
 
   afterEach(() => {
-    if (existsSync(TEST_AUTH_FILE)) {
-      unlinkSync(TEST_AUTH_FILE);
+    cleanupAuthFiles();
+  });
+
+  afterAll(() => {
+    if (ORIGINAL_XDG_CONFIG_HOME === undefined) {
+      delete process.env.XDG_CONFIG_HOME;
+      return;
     }
-    if (existsSync(TEST_CLI_CONFIG_FILE)) {
-      unlinkSync(TEST_CLI_CONFIG_FILE);
-    }
+    process.env.XDG_CONFIG_HOME = ORIGINAL_XDG_CONFIG_HOME;
   });
 
   describe("getAuthFilePath", () => {
@@ -63,7 +79,7 @@ describe("Auth Module", () => {
       if (!existsSync(TEST_AUTH_DIR)) {
         mkdirSync(TEST_AUTH_DIR, { recursive: true });
       }
-      writeFileSync(TEST_AUTH_FILE, JSON.stringify({ token: "test" }));
+      writeFileSync(TEST_CONFIG_AUTH_FILE, JSON.stringify({ token: "test" }));
       
       const result = verifyCursorAuth();
       expect(result).toBe(true);
@@ -73,7 +89,7 @@ describe("Auth Module", () => {
       if (!existsSync(TEST_CLI_CONFIG_DIR)) {
         mkdirSync(TEST_CLI_CONFIG_DIR, { recursive: true });
       }
-      writeFileSync(TEST_CLI_CONFIG_FILE, JSON.stringify({ accessToken: "test" }));
+      writeFileSync(TEST_CURSOR_CLI_CONFIG_FILE, JSON.stringify({ accessToken: "test" }));
 
       const result = verifyCursorAuth();
       expect(result).toBe(true);
@@ -85,7 +101,7 @@ describe("Auth Module", () => {
       if (!existsSync(TEST_AUTH_DIR)) {
         mkdirSync(TEST_AUTH_DIR, { recursive: true });
       }
-      writeFileSync(TEST_AUTH_FILE, JSON.stringify({ token: "test" }));
+      writeFileSync(TEST_CONFIG_AUTH_FILE, JSON.stringify({ token: "test" }));
 
       const result = await pollForAuthFile(1000, 100);
       expect(result).toBe(true);
@@ -103,7 +119,7 @@ describe("Auth Module", () => {
         if (!existsSync(TEST_AUTH_DIR)) {
           mkdirSync(TEST_AUTH_DIR, { recursive: true });
         }
-        writeFileSync(TEST_AUTH_FILE, JSON.stringify({ token: "test" }));
+        writeFileSync(TEST_CONFIG_AUTH_FILE, JSON.stringify({ token: "test" }));
       }, 300);
 
       const result = await pollPromise;
@@ -127,7 +143,7 @@ describe("Auth Module", () => {
       mock.module("fs", () => ({
         ...require("fs"),
         existsSync: (path: string) => {
-          if (path === TEST_AUTH_FILE) {
+          if (path === TEST_CONFIG_AUTH_FILE) {
             checkCount++;
           }
           return originalExistsSync(path);

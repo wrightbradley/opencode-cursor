@@ -253,6 +253,29 @@ flowchart TB
 - OAuth authentication
 - Error parsing (quota/auth/network)
 
+## Development
+
+Build and run tests locally:
+
+```bash
+bun install
+bun run build
+bun run test:ci:unit
+bun run test:ci:integration
+```
+
+CI runs split suites in `.github/workflows/ci.yml`:
+
+- `unit` job: `bun run test:ci:unit`
+- `integration` job: `bun run test:ci:integration`
+
+Integration CI defaults to OpenCode-owned loop mode:
+
+- `CURSOR_ACP_TOOL_LOOP_MODE=opencode`
+- `CURSOR_ACP_ENABLE_OPENCODE_TOOLS=true`
+- `CURSOR_ACP_FORWARD_TOOL_CALLS=false`
+- `CURSOR_ACP_EMIT_TOOL_UPDATES=false`
+
 ## Troubleshooting
 
 **"fetch() URL is invalid"** - Run `opencode auth login` without arguments
