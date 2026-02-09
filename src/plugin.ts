@@ -50,7 +50,7 @@ function getGlobalKey(): string {
 
 const FORCE_TOOL_MODE = process.env.CURSOR_ACP_FORCE !== "false";
 const EMIT_TOOL_UPDATES = process.env.CURSOR_ACP_EMIT_TOOL_UPDATES === "true";
-const FORWARD_TOOL_CALLS = process.env.CURSOR_ACP_FORWARD_TOOL_CALLS === "true";
+const FORWARD_TOOL_CALLS = process.env.CURSOR_ACP_FORWARD_TOOL_CALLS !== "false";
 
 function createChatCompletionResponse(model: string, content: string, reasoningContent?: string) {
   const message: { role: "assistant"; content: string; reasoning_content?: string } = {

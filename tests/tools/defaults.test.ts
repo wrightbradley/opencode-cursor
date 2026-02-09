@@ -163,6 +163,63 @@ describe("Default Tools", () => {
     fs.unlinkSync(tmpFile);
   });
 
+  it("should prevent grep command injection via pattern", async () => {
+    const registry = new ToolRegistry();
+    registerDefaultTools(registry);
+    const executor = new LocalExecutor(registry);
+
+    const fs = await import("fs");
+    const tmpFile = `/tmp/test-inject-${Date.now()}.txt`;
+    fs.writeFileSync(tmpFile, "safe content\n", "utf-8");
+
+    const attacks = [
+      "test; echo INJECTED",
+      "test && echo INJECTED",
+      "test || echo INJECTED",
+      "test | cat /etc/hostname",
+      "test $(echo INJECTED)",
+      "test `echo INJECTED`",
+    ];
+
+    for (const malicious of attacks) {
+      const result = await executeWithChain([executor], "grep", {
+        pattern: malicious,
+        path: tmpFile
+      });
+      // execFile passes pattern as argument, not through shell
+      // So these should find no matches, not execute commands
+      expect(result.status).toBe("success");
+      expect(result.output).toBe("No matches found");
+    }
+
+    fs.unlinkSync(tmpFile);
+  });
+
+  it("should prevent glob command injection via pattern", async () => {
+    const registry = new ToolRegistry();
+    registerDefaultTools(registry);
+    const executor = new LocalExecutor(registry);
+
+    const attacks = [
+      "*.ts; echo INJECTED",
+      "*.ts && echo INJECTED",
+      "$(echo INJECTED).ts",
+    ];
+
+    for (const malicious of attacks) {
+      const result = await executeWithChain([executor], "glob", {
+        pattern: malicious,
+        path: "/tmp"
+      });
+      // execFile passes pattern as -name argument, not through shell
+      // find may error on special chars or return no matches — both are safe
+      if (result.status === "success") {
+        expect(result.output).not.toContain("INJECTED");
+      }
+      // Either way, no command injection occurred
+    }
+  });
+
   it("should execute glob tool safely", async () => {
     const registry = new ToolRegistry();
     registerDefaultTools(registry);
