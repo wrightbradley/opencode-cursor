@@ -18,6 +18,21 @@ const READ_TOOL = {
   },
 };
 
+const TODO_WRITE_TOOL = {
+  type: "function",
+  function: {
+    name: "todowrite",
+    description: "Create or update todos",
+    parameters: {
+      type: "object",
+      properties: {
+        todos: { type: "array" },
+      },
+      required: ["todos"],
+    },
+  },
+};
+
 const MOCK_CURSOR_AGENT = `#!/usr/bin/env node
 const fs = require("fs");
 
@@ -29,6 +44,7 @@ if (args[0] === "models") {
 
 const scenario = process.env.MOCK_CURSOR_SCENARIO || "assistant-text";
 const promptFile = process.env.MOCK_CURSOR_PROMPT_FILE;
+const argsFile = process.env.MOCK_CURSOR_ARGS_FILE;
 let prompt = "";
 
 process.stdin.setEncoding("utf8");
@@ -37,6 +53,9 @@ process.stdin.on("data", (chunk) => {
 });
 
 process.stdin.on("end", () => {
+  if (argsFile) {
+    fs.writeFileSync(argsFile, JSON.stringify(args));
+  }
   if (promptFile) {
     fs.writeFileSync(promptFile, prompt);
   }
@@ -80,6 +99,29 @@ process.stdin.on("end", () => {
         message: {
           role: "assistant",
           content: [{ type: "text", text: "bash passthrough text" }],
+        },
+      },
+    ];
+  } else if (scenario === "tool-updateTodos-then-text") {
+    events = [
+      {
+        type: "tool_call",
+        call_id: "c1",
+        name: "updateTodos",
+        tool_call: {
+          updateTodos: {
+            args: {
+              todos: [{ content: "Book flights", status: "pending" }],
+            },
+          },
+        },
+      },
+      {
+        type: "assistant",
+        timestamp_ms: now + 1,
+        message: {
+          role: "assistant",
+          content: [{ type: "text", text: "todo alias passthrough text" }],
         },
       },
     ];
@@ -145,16 +187,22 @@ describe("OpenCode-owned tool loop integration", () => {
   let originalPath = "";
   let originalToolLoopMode: string | undefined;
   let originalToolsEnabled: string | undefined;
+  let originalReuseExistingProxy: string | undefined;
+  let originalProviderBoundary: string | undefined;
   let mockDir = "";
   let promptFile = "";
+  let argsFile = "";
   let baseURL = "";
 
   beforeAll(async () => {
     originalPath = process.env.PATH || "";
     originalToolLoopMode = process.env.CURSOR_ACP_TOOL_LOOP_MODE;
     originalToolsEnabled = process.env.CURSOR_ACP_ENABLE_OPENCODE_TOOLS;
+    originalReuseExistingProxy = process.env.CURSOR_ACP_REUSE_EXISTING_PROXY;
+    originalProviderBoundary = process.env.CURSOR_ACP_PROVIDER_BOUNDARY;
     mockDir = mkdtempSync(join(tmpdir(), "cursor-agent-mock-"));
     promptFile = join(mockDir, "prompt.txt");
+    argsFile = join(mockDir, "args.json");
 
     const mockCursorPath = join(mockDir, "cursor-agent");
     writeFileSync(mockCursorPath, MOCK_CURSOR_AGENT, "utf8");
@@ -163,7 +211,10 @@ describe("OpenCode-owned tool loop integration", () => {
     process.env.PATH = `${mockDir}:${originalPath}`;
     process.env.CURSOR_ACP_TOOL_LOOP_MODE = "opencode";
     process.env.CURSOR_ACP_ENABLE_OPENCODE_TOOLS = "true";
+    process.env.CURSOR_ACP_REUSE_EXISTING_PROXY = "false";
+    process.env.CURSOR_ACP_PROVIDER_BOUNDARY = "v1";
     process.env.MOCK_CURSOR_PROMPT_FILE = "";
+    process.env.MOCK_CURSOR_ARGS_FILE = "";
     process.env.MOCK_CURSOR_SCENARIO = "assistant-text";
 
     const { CursorPlugin } = await import("../../src/plugin");
@@ -202,7 +253,18 @@ describe("OpenCode-owned tool loop integration", () => {
     } else {
       process.env.CURSOR_ACP_ENABLE_OPENCODE_TOOLS = originalToolsEnabled;
     }
+    if (originalReuseExistingProxy === undefined) {
+      delete process.env.CURSOR_ACP_REUSE_EXISTING_PROXY;
+    } else {
+      process.env.CURSOR_ACP_REUSE_EXISTING_PROXY = originalReuseExistingProxy;
+    }
+    if (originalProviderBoundary === undefined) {
+      delete process.env.CURSOR_ACP_PROVIDER_BOUNDARY;
+    } else {
+      process.env.CURSOR_ACP_PROVIDER_BOUNDARY = originalProviderBoundary;
+    }
     delete process.env.MOCK_CURSOR_PROMPT_FILE;
+    delete process.env.MOCK_CURSOR_ARGS_FILE;
     delete process.env.MOCK_CURSOR_SCENARIO;
     rmSync(mockDir, { recursive: true, force: true });
   });
@@ -253,6 +315,22 @@ describe("OpenCode-owned tool loop integration", () => {
     expect(json.choices?.[0]?.message?.content).toBeNull();
   });
 
+  it("maps updateTodos alias to allowed todowrite in non-stream mode", async () => {
+    process.env.MOCK_CURSOR_SCENARIO = "tool-updateTodos-then-text";
+    process.env.MOCK_CURSOR_PROMPT_FILE = "";
+
+    const response = await requestCompletion(baseURL, {
+      model: "auto",
+      stream: false,
+      tools: [TODO_WRITE_TOOL],
+      messages: [{ role: "user", content: "Create a todo list" }],
+    });
+
+    const json: any = await response.json();
+    expect(json.choices?.[0]?.message?.tool_calls?.[0]?.function?.name).toBe("todowrite");
+    expect(json.choices?.[0]?.finish_reason).toBe("tool_calls");
+  });
+
   it("continues on second turn with role tool result and includes TOOL_RESULT in prompt", async () => {
     process.env.MOCK_CURSOR_SCENARIO = "assistant-text";
     process.env.MOCK_CURSOR_PROMPT_FILE = promptFile;
@@ -297,6 +375,26 @@ describe("OpenCode-owned tool loop integration", () => {
 
     const promptText = readFileSync(promptFile, "utf8");
     expect(promptText).toContain("TOOL_RESULT (call_id: c1): {\"content\":\"file contents here\"}");
+  });
+
+  it("normalizes provider-prefixed model ids before invoking cursor-agent", async () => {
+    process.env.MOCK_CURSOR_SCENARIO = "assistant-text";
+    process.env.MOCK_CURSOR_PROMPT_FILE = "";
+    process.env.MOCK_CURSOR_ARGS_FILE = argsFile;
+
+    const response = await requestCompletion(baseURL, {
+      model: "cursor-acp/auto",
+      stream: false,
+      messages: [{ role: "user", content: "Say hello" }],
+    });
+
+    const json: any = await response.json();
+    expect(json.choices?.[0]?.message?.content).toContain("The file contains...");
+
+    const argv = JSON.parse(readFileSync(argsFile, "utf8")) as string[];
+    const modelIndex = argv.indexOf("--model");
+    expect(modelIndex).toBeGreaterThan(-1);
+    expect(argv[modelIndex + 1]).toBe("auto");
   });
 
   it("does not intercept non-allowed tools", async () => {

@@ -15,7 +15,21 @@ No prompt limits. No broken streams. Full thinking + tool support in Opencode. Y
 curl -fsSL https://raw.githubusercontent.com/Nomadcxx/opencode-cursor/main/install.sh | bash
 ```
 
-**Option B: TUI Installer**
+**Option B: npm Package (Recommended for updates)**
+
+```bash
+npm install -g open-cursor
+open-cursor install
+```
+
+Upgrade later with:
+
+```bash
+npm update -g open-cursor
+open-cursor sync-models
+```
+
+**Option C: TUI Installer**
 
 ```bash
 git clone https://github.com/Nomadcxx/opencode-cursor.git
@@ -23,7 +37,7 @@ cd opencode-cursor
 go build -o ./installer ./cmd/installer && ./installer
 ```
 
-**Option C: Let an LLM do it**
+**Option D: Let an LLM do it**
 
 Paste this into any LLM agent (Claude Code, OpenCode, Cursor, etc.):
 
@@ -51,7 +65,7 @@ Install the cursor-acp plugin for OpenCode:
 5. Verify: opencode models | grep cursor
 ```
 
-**Option D: Manual Install**
+**Option E: Manual Install**
 
 ```bash
 bun install && bun run build
@@ -140,6 +154,13 @@ Credential file locations:
 ```bash
 opencode run "your prompt" --model cursor-acp/auto
 opencode run "your prompt" --model cursor-acp/sonnet-4.5
+```
+
+If installed via npm, manage setup with:
+
+```bash
+open-cursor status
+open-cursor sync-models
 ```
 
 ## Models
@@ -272,6 +293,7 @@ CI runs split suites in `.github/workflows/ci.yml`:
 Integration CI defaults to OpenCode-owned loop mode:
 
 - `CURSOR_ACP_TOOL_LOOP_MODE=opencode`
+- `CURSOR_ACP_PROVIDER_BOUNDARY=v1`
 - `CURSOR_ACP_ENABLE_OPENCODE_TOOLS=true`
 - `CURSOR_ACP_FORWARD_TOOL_CALLS=false`
 - `CURSOR_ACP_EMIT_TOOL_UPDATES=false`
@@ -301,6 +323,10 @@ Set the log level via environment variable:
 - `CURSOR_ACP_LOG_LEVEL=info` - Default level
 - `CURSOR_ACP_LOG_LEVEL=warn` - Warnings and errors only
 - `CURSOR_ACP_LOG_LEVEL=error` - Errors only
+
+Provider-boundary rollout:
+- `CURSOR_ACP_PROVIDER_BOUNDARY=legacy` - Original provider/runtime boundary behavior
+- `CURSOR_ACP_PROVIDER_BOUNDARY=v1` - New shared boundary/interception path (recommended)
 
 Disable log output entirely:
 ```bash

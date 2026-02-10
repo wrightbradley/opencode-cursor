@@ -14,10 +14,7 @@ import { createLogger } from "./utils/logger";
 import { parseAgentError, formatErrorForUser, stripAnsi } from "./utils/errors";
 import { buildPromptFromMessages } from "./proxy/prompt-builder.js";
 import {
-  createToolCallCompletionResponse,
-  createToolCallStreamChunks,
   extractAllowedToolNames,
-  extractOpenAiToolCall,
   type OpenAiToolCall,
 } from "./proxy/tool-loop.js";
 import { OpenCodeToolDiscovery } from "./tools/discovery.js";
@@ -33,6 +30,13 @@ import { McpExecutor } from "./tools/executors/mcp.js";
 import { executeWithChain } from "./tools/core/executor.js";
 import { registerDefaultTools } from "./tools/defaults.js";
 import type { IToolExecutor } from "./tools/core/types.js";
+import {
+  createProviderBoundary,
+  parseProviderBoundaryMode,
+  type ToolLoopMode,
+  type ToolOptionResolution,
+} from "./provider/boundary.js";
+import { handleToolLoopEvent } from "./provider/runtime-interception.js";
 
 const log = createLogger("plugin");
 
@@ -50,6 +54,7 @@ const CURSOR_PROVIDER_ID = "cursor-acp";
 const CURSOR_PROXY_HOST = "127.0.0.1";
 const CURSOR_PROXY_DEFAULT_PORT = 32124;
 const CURSOR_PROXY_DEFAULT_BASE_URL = `http://${CURSOR_PROXY_HOST}:${CURSOR_PROXY_DEFAULT_PORT}/v1`;
+const REUSE_EXISTING_PROXY = process.env.CURSOR_ACP_REUSE_EXISTING_PROXY !== "false";
 
 function getGlobalKey(): string {
   return "__opencode_cursor_proxy_server__";
@@ -58,7 +63,6 @@ function getGlobalKey(): string {
 const FORCE_TOOL_MODE = process.env.CURSOR_ACP_FORCE !== "false";
 const EMIT_TOOL_UPDATES = process.env.CURSOR_ACP_EMIT_TOOL_UPDATES === "true";
 const FORWARD_TOOL_CALLS = process.env.CURSOR_ACP_FORWARD_TOOL_CALLS !== "false";
-type ToolLoopMode = "opencode" | "proxy-exec" | "off";
 
 function parseToolLoopMode(value: string | undefined): { mode: ToolLoopMode; valid: boolean } {
   const normalized = (value ?? "opencode").trim().toLowerCase();
@@ -70,38 +74,28 @@ function parseToolLoopMode(value: string | undefined): { mode: ToolLoopMode; val
 
 const TOOL_LOOP_MODE_RAW = process.env.CURSOR_ACP_TOOL_LOOP_MODE;
 const { mode: TOOL_LOOP_MODE, valid: TOOL_LOOP_MODE_VALID } = parseToolLoopMode(TOOL_LOOP_MODE_RAW);
-const PROXY_EXECUTE_TOOL_CALLS = TOOL_LOOP_MODE === "proxy-exec" && FORWARD_TOOL_CALLS;
-const SUPPRESS_CONVERTER_TOOL_EVENTS = TOOL_LOOP_MODE === "proxy-exec" && !FORWARD_TOOL_CALLS;
-const SHOULD_EMIT_TOOL_UPDATES = EMIT_TOOL_UPDATES && TOOL_LOOP_MODE === "proxy-exec";
-
-type ToolOptionResolution = {
-  tools: unknown;
-  action: "preserve" | "fallback" | "override" | "none";
-};
+const PROVIDER_BOUNDARY_MODE_RAW = process.env.CURSOR_ACP_PROVIDER_BOUNDARY;
+const {
+  mode: PROVIDER_BOUNDARY_MODE,
+  valid: PROVIDER_BOUNDARY_MODE_VALID,
+} = parseProviderBoundaryMode(PROVIDER_BOUNDARY_MODE_RAW);
+const PROVIDER_BOUNDARY = createProviderBoundary(PROVIDER_BOUNDARY_MODE, CURSOR_PROVIDER_ID);
+const {
+  proxyExecuteToolCalls: PROXY_EXECUTE_TOOL_CALLS,
+  suppressConverterToolEvents: SUPPRESS_CONVERTER_TOOL_EVENTS,
+  shouldEmitToolUpdates: SHOULD_EMIT_TOOL_UPDATES,
+} = PROVIDER_BOUNDARY.computeToolLoopFlags(
+  TOOL_LOOP_MODE,
+  FORWARD_TOOL_CALLS,
+  EMIT_TOOL_UPDATES,
+);
 
 export function resolveChatParamTools(
   mode: ToolLoopMode,
   existingTools: unknown,
   refreshedTools: Array<any>,
 ): ToolOptionResolution {
-  if (mode === "proxy-exec") {
-    if (refreshedTools.length > 0) {
-      return { tools: refreshedTools, action: "override" };
-    }
-    return { tools: existingTools, action: "none" };
-  }
-
-  if (mode === "opencode") {
-    if (existingTools != null) {
-      return { tools: existingTools, action: "preserve" };
-    }
-    if (refreshedTools.length > 0) {
-      return { tools: refreshedTools, action: "fallback" };
-    }
-    return { tools: existingTools, action: "none" };
-  }
-
-  return { tools: existingTools, action: "none" };
+  return PROVIDER_BOUNDARY.resolveChatParamTools(mode, existingTools, refreshedTools);
 }
 
 function createChatCompletionResponse(model: string, content: string, reasoningContent?: string) {
@@ -188,6 +182,7 @@ function formatToolUpdateEvent(update: ToolUpdate): string {
 function findFirstAllowedToolCallInOutput(
   output: string,
   allowedToolNames: Set<string>,
+  toolLoopMode: ToolLoopMode,
 ): OpenAiToolCall | null {
   if (allowedToolNames.size === 0 || !output) {
     return null;
@@ -199,7 +194,11 @@ function findFirstAllowedToolCallInOutput(
       continue;
     }
 
-    const toolCall = extractOpenAiToolCall(event as any, allowedToolNames);
+    const toolCall = PROVIDER_BOUNDARY.maybeExtractToolCall(
+      event as any,
+      allowedToolNames,
+      toolLoopMode,
+    );
     if (toolCall) {
       return toolCall;
     }
@@ -284,7 +283,7 @@ async function ensureCursorProxyServer(workspaceDirectory: string, toolRouter?: 
         const allowedToolNames = extractAllowedToolNames(tools);
 
       const prompt = buildPromptFromMessages(messages, tools);
-      const model = typeof body?.model === "string" ? body.model : "auto";
+      const model = PROVIDER_BOUNDARY.normalizeRuntimeModel(body?.model);
 
       const bunAny = globalThis as any;
       if (!bunAny.Bun?.spawn) {
@@ -329,24 +328,26 @@ async function ensureCursorProxyServer(workspaceDirectory: string, toolRouter?: 
 
         const stdout = (stdoutText || "").trim();
         const stderr = (stderrText || "").trim();
-        if (TOOL_LOOP_MODE === "opencode") {
-          const toolCall = findFirstAllowedToolCallInOutput(stdout, allowedToolNames);
-          if (toolCall) {
-            log.debug("Intercepted OpenCode tool call (non-stream)", {
-              name: toolCall.function.name,
-              callId: toolCall.id,
-            });
-            const meta = {
-              id: `cursor-acp-${Date.now()}`,
-              created: Math.floor(Date.now() / 1000),
-              model,
-            };
-            const payload = createToolCallCompletionResponse(meta, toolCall);
-            return new Response(JSON.stringify(payload), {
-              status: 200,
-              headers: { "Content-Type": "application/json" },
-            });
-          }
+        const toolCall = findFirstAllowedToolCallInOutput(
+          stdout,
+          allowedToolNames,
+          TOOL_LOOP_MODE,
+        );
+        if (toolCall) {
+          log.debug("Intercepted OpenCode tool call (non-stream)", {
+            name: toolCall.function.name,
+            callId: toolCall.id,
+          });
+          const meta = {
+            id: `cursor-acp-${Date.now()}`,
+            created: Math.floor(Date.now() / 1000),
+            model,
+          };
+          const payload = PROVIDER_BOUNDARY.createNonStreamToolCallResponse(meta, toolCall);
+          return new Response(JSON.stringify(payload), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          });
         }
 
         // cursor-agent sometimes returns non-zero even with usable stdout.
@@ -394,7 +395,10 @@ async function ensureCursorProxyServer(workspaceDirectory: string, toolRouter?: 
                 name: toolCall.function.name,
                 callId: toolCall.id,
               });
-              for (const chunk of createToolCallStreamChunks({ id, created, model }, toolCall)) {
+              for (const chunk of PROVIDER_BOUNDARY.createStreamToolCallChunks(
+                { id, created, model },
+                toolCall,
+              )) {
                 controller.enqueue(encoder.encode(`data: ${JSON.stringify(chunk)}\n\n`));
               }
               controller.enqueue(encoder.encode(formatSseDone()));
@@ -420,33 +424,32 @@ async function ensureCursorProxyServer(workspaceDirectory: string, toolRouter?: 
                 }
 
                 if (event.type === "tool_call") {
-                  const updates = await toolMapper.mapCursorEventToAcp(
-                    event,
-                    event.session_id ?? toolSessionId,
-                  );
-                  if (SHOULD_EMIT_TOOL_UPDATES) {
-                    for (const update of updates) {
+                  const result = await handleToolLoopEvent({
+                    event: event as any,
+                    boundary: PROVIDER_BOUNDARY,
+                    toolLoopMode: TOOL_LOOP_MODE,
+                    allowedToolNames,
+                    toolMapper,
+                    toolSessionId,
+                    shouldEmitToolUpdates: SHOULD_EMIT_TOOL_UPDATES,
+                    proxyExecuteToolCalls: PROXY_EXECUTE_TOOL_CALLS,
+                    suppressConverterToolEvents: SUPPRESS_CONVERTER_TOOL_EVENTS,
+                    toolRouter,
+                    responseMeta: { id, created, model },
+                    onToolUpdate: (update) => {
                       controller.enqueue(encoder.encode(formatToolUpdateEvent(update)));
-                    }
-                  }
-
-                  if (TOOL_LOOP_MODE === "opencode") {
-                    const toolCall = extractOpenAiToolCall(event as any, allowedToolNames);
-                    if (toolCall) {
-                      emitToolCallAndTerminate(toolCall);
-                      break;
-                    }
-                  }
-
-                  // Handle OpenCode tools
-                  if (toolRouter && PROXY_EXECUTE_TOOL_CALLS) {
-                    const toolResult = await toolRouter.handleToolCall(event as any, { id, created, model });
-                    if (toolResult) {
+                    },
+                    onToolResult: (toolResult) => {
                       controller.enqueue(encoder.encode(`data: ${JSON.stringify(toolResult)}\n\n`));
-                    }
+                    },
+                    onInterceptedToolCall: (toolCall) => {
+                      emitToolCallAndTerminate(toolCall);
+                    },
+                  });
+                  if (result.intercepted) {
+                    break;
                   }
-
-                  if (SUPPRESS_CONVERTER_TOOL_EVENTS) {
+                  if (result.skipConverter) {
                     continue;
                   }
                 }
@@ -467,32 +470,32 @@ async function ensureCursorProxyServer(workspaceDirectory: string, toolRouter?: 
                 continue;
               }
               if (event.type === "tool_call") {
-                const updates = await toolMapper.mapCursorEventToAcp(
-                  event,
-                  event.session_id ?? toolSessionId,
-                );
-                if (SHOULD_EMIT_TOOL_UPDATES) {
-                  for (const update of updates) {
+                const result = await handleToolLoopEvent({
+                  event: event as any,
+                  boundary: PROVIDER_BOUNDARY,
+                  toolLoopMode: TOOL_LOOP_MODE,
+                  allowedToolNames,
+                  toolMapper,
+                  toolSessionId,
+                  shouldEmitToolUpdates: SHOULD_EMIT_TOOL_UPDATES,
+                  proxyExecuteToolCalls: PROXY_EXECUTE_TOOL_CALLS,
+                  suppressConverterToolEvents: SUPPRESS_CONVERTER_TOOL_EVENTS,
+                  toolRouter,
+                  responseMeta: { id, created, model },
+                  onToolUpdate: (update) => {
                     controller.enqueue(encoder.encode(formatToolUpdateEvent(update)));
-                  }
-                }
-
-                if (TOOL_LOOP_MODE === "opencode") {
-                  const toolCall = extractOpenAiToolCall(event as any, allowedToolNames);
-                  if (toolCall) {
-                    emitToolCallAndTerminate(toolCall);
-                    break;
-                  }
-                }
-
-                if (toolRouter && PROXY_EXECUTE_TOOL_CALLS) {
-                  const toolResult = await toolRouter.handleToolCall(event as any, { id, created, model });
-                  if (toolResult) {
+                  },
+                  onToolResult: (toolResult) => {
                     controller.enqueue(encoder.encode(`data: ${JSON.stringify(toolResult)}\n\n`));
-                  }
+                  },
+                  onInterceptedToolCall: (toolCall) => {
+                    emitToolCallAndTerminate(toolCall);
+                  },
+                });
+                if (result.intercepted) {
+                  break;
                 }
-
-                if (SUPPRESS_CONVERTER_TOOL_EVENTS) {
+                if (result.skipConverter) {
                   continue;
                 }
               }
@@ -541,15 +544,17 @@ async function ensureCursorProxyServer(workspaceDirectory: string, toolRouter?: 
     }
   };
 
-  // Check if another process already started a proxy on the default port
-  try {
-    const res = await fetch(`http://${CURSOR_PROXY_HOST}:${CURSOR_PROXY_DEFAULT_PORT}/health`).catch(() => null);
-    if (res && res.ok) {
-      g[key].baseURL = CURSOR_PROXY_DEFAULT_BASE_URL;
-      return CURSOR_PROXY_DEFAULT_BASE_URL;
+  if (REUSE_EXISTING_PROXY) {
+    // Check if another process already started a proxy on the default port
+    try {
+      const res = await fetch(`http://${CURSOR_PROXY_HOST}:${CURSOR_PROXY_DEFAULT_PORT}/health`).catch(() => null);
+      if (res && res.ok) {
+        g[key].baseURL = CURSOR_PROXY_DEFAULT_BASE_URL;
+        return CURSOR_PROXY_DEFAULT_BASE_URL;
+      }
+    } catch {
+      // ignore
     }
-  } catch {
-    // ignore
   }
 
   // Use Node.js http server (works in both Node and Bun)
@@ -612,7 +617,7 @@ async function ensureCursorProxyServer(workspaceDirectory: string, toolRouter?: 
       const allowedToolNames = extractAllowedToolNames(tools);
 
       const prompt = buildPromptFromMessages(messages, tools);
-      const model = typeof bodyData?.model === "string" ? bodyData.model : "auto";
+      const model = PROVIDER_BOUNDARY.normalizeRuntimeModel(bodyData?.model);
 
       const cmd = [
         "cursor-agent",
@@ -645,23 +650,25 @@ async function ensureCursorProxyServer(workspaceDirectory: string, toolRouter?: 
         child.on("close", async (code) => {
           const stdout = Buffer.concat(stdoutChunks).toString().trim();
           const stderr = Buffer.concat(stderrChunks).toString().trim();
-          if (TOOL_LOOP_MODE === "opencode") {
-            const toolCall = findFirstAllowedToolCallInOutput(stdout, allowedToolNames);
-            if (toolCall) {
-              log.debug("Intercepted OpenCode tool call (non-stream)", {
-                name: toolCall.function.name,
-                callId: toolCall.id,
-              });
-              const meta = {
-                id: `cursor-acp-${Date.now()}`,
-                created: Math.floor(Date.now() / 1000),
-                model,
-              };
-              const payload = createToolCallCompletionResponse(meta, toolCall);
-              res.writeHead(200, { "Content-Type": "application/json" });
-              res.end(JSON.stringify(payload));
-              return;
-            }
+          const toolCall = findFirstAllowedToolCallInOutput(
+            stdout,
+            allowedToolNames,
+            TOOL_LOOP_MODE,
+          );
+          if (toolCall) {
+            log.debug("Intercepted OpenCode tool call (non-stream)", {
+              name: toolCall.function.name,
+              callId: toolCall.id,
+            });
+            const meta = {
+              id: `cursor-acp-${Date.now()}`,
+              created: Math.floor(Date.now() / 1000),
+              model,
+            };
+            const payload = PROVIDER_BOUNDARY.createNonStreamToolCallResponse(meta, toolCall);
+            res.writeHead(200, { "Content-Type": "application/json" });
+            res.end(JSON.stringify(payload));
+            return;
           }
 
           const completion = extractCompletionFromStream(stdout);
@@ -710,7 +717,10 @@ async function ensureCursorProxyServer(workspaceDirectory: string, toolRouter?: 
             name: toolCall.function.name,
             callId: toolCall.id,
           });
-          for (const chunk of createToolCallStreamChunks({ id, created, model }, toolCall)) {
+          for (const chunk of PROVIDER_BOUNDARY.createStreamToolCallChunks(
+            { id, created, model },
+            toolCall,
+          )) {
             res.write(`data: ${JSON.stringify(chunk)}\n\n`);
           }
           res.write(formatSseDone());
@@ -737,32 +747,32 @@ async function ensureCursorProxyServer(workspaceDirectory: string, toolRouter?: 
             }
 
             if (event.type === "tool_call") {
-              const updates = await toolMapper.mapCursorEventToAcp(
-                event,
-                event.session_id ?? toolSessionId,
-              );
-              if (SHOULD_EMIT_TOOL_UPDATES) {
-                for (const update of updates) {
+              const result = await handleToolLoopEvent({
+                event: event as any,
+                boundary: PROVIDER_BOUNDARY,
+                toolLoopMode: TOOL_LOOP_MODE,
+                allowedToolNames,
+                toolMapper,
+                toolSessionId,
+                shouldEmitToolUpdates: SHOULD_EMIT_TOOL_UPDATES,
+                proxyExecuteToolCalls: PROXY_EXECUTE_TOOL_CALLS,
+                suppressConverterToolEvents: SUPPRESS_CONVERTER_TOOL_EVENTS,
+                toolRouter,
+                responseMeta: { id, created, model },
+                onToolUpdate: (update) => {
                   res.write(formatToolUpdateEvent(update));
-                }
-              }
-
-              if (TOOL_LOOP_MODE === "opencode") {
-                const toolCall = extractOpenAiToolCall(event as any, allowedToolNames);
-                if (toolCall) {
-                  emitToolCallAndTerminate(toolCall);
-                  break;
-                }
-              }
-
-              if (toolRouter && PROXY_EXECUTE_TOOL_CALLS) {
-                const toolResult = await toolRouter.handleToolCall(event as any, { id, created, model });
-                if (toolResult) {
+                },
+                onToolResult: (toolResult) => {
                   res.write(`data: ${JSON.stringify(toolResult)}\n\n`);
-                }
+                },
+                onInterceptedToolCall: (toolCall) => {
+                  emitToolCallAndTerminate(toolCall);
+                },
+              });
+              if (result.intercepted) {
+                break;
               }
-
-              if (SUPPRESS_CONVERTER_TOOL_EVENTS) {
+              if (result.skipConverter) {
                 continue;
               }
             }
@@ -790,32 +800,32 @@ async function ensureCursorProxyServer(workspaceDirectory: string, toolRouter?: 
             }
 
             if (event.type === "tool_call") {
-              const updates = await toolMapper.mapCursorEventToAcp(
-                event,
-                event.session_id ?? toolSessionId,
-              );
-              if (SHOULD_EMIT_TOOL_UPDATES) {
-                for (const update of updates) {
+              const result = await handleToolLoopEvent({
+                event: event as any,
+                boundary: PROVIDER_BOUNDARY,
+                toolLoopMode: TOOL_LOOP_MODE,
+                allowedToolNames,
+                toolMapper,
+                toolSessionId,
+                shouldEmitToolUpdates: SHOULD_EMIT_TOOL_UPDATES,
+                proxyExecuteToolCalls: PROXY_EXECUTE_TOOL_CALLS,
+                suppressConverterToolEvents: SUPPRESS_CONVERTER_TOOL_EVENTS,
+                toolRouter,
+                responseMeta: { id, created, model },
+                onToolUpdate: (update) => {
                   res.write(formatToolUpdateEvent(update));
-                }
-              }
-
-              if (TOOL_LOOP_MODE === "opencode") {
-                const toolCall = extractOpenAiToolCall(event as any, allowedToolNames);
-                if (toolCall) {
-                  emitToolCallAndTerminate(toolCall);
-                  break;
-                }
-              }
-
-              if (toolRouter && PROXY_EXECUTE_TOOL_CALLS) {
-                const toolResult = await toolRouter.handleToolCall(event as any, { id, created, model });
-                if (toolResult) {
+                },
+                onToolResult: (toolResult) => {
                   res.write(`data: ${JSON.stringify(toolResult)}\n\n`);
-                }
+                },
+                onInterceptedToolCall: (toolCall) => {
+                  emitToolCallAndTerminate(toolCall);
+                },
+              });
+              if (result.intercepted) {
+                break;
               }
-
-              if (SUPPRESS_CONVERTER_TOOL_EVENTS) {
+              if (result.skipConverter) {
                 continue;
               }
             }
@@ -895,15 +905,17 @@ async function ensureCursorProxyServer(workspaceDirectory: string, toolRouter?: 
       throw error;
     }
 
-    // Port in use - check if it's our proxy
-    try {
-      const res = await fetch(`http://${CURSOR_PROXY_HOST}:${CURSOR_PROXY_DEFAULT_PORT}/health`).catch(() => null);
-      if (res && res.ok) {
-        g[key].baseURL = CURSOR_PROXY_DEFAULT_BASE_URL;
-        return CURSOR_PROXY_DEFAULT_BASE_URL;
+    if (REUSE_EXISTING_PROXY) {
+      // Port in use - check if it's our proxy
+      try {
+        const res = await fetch(`http://${CURSOR_PROXY_HOST}:${CURSOR_PROXY_DEFAULT_PORT}/health`).catch(() => null);
+        if (res && res.ok) {
+          g[key].baseURL = CURSOR_PROXY_DEFAULT_BASE_URL;
+          return CURSOR_PROXY_DEFAULT_BASE_URL;
+        }
+      } catch {
+        // ignore
       }
-    } catch {
-      // ignore
     }
 
     // Start on random port
@@ -1019,8 +1031,14 @@ export const CursorPlugin: Plugin = async ({ $, directory, client, serverUrl }: 
   if (!TOOL_LOOP_MODE_VALID) {
     log.warn("Invalid CURSOR_ACP_TOOL_LOOP_MODE; defaulting to opencode", { value: TOOL_LOOP_MODE_RAW });
   }
+  if (!PROVIDER_BOUNDARY_MODE_VALID) {
+    log.warn("Invalid CURSOR_ACP_PROVIDER_BOUNDARY; defaulting to legacy", {
+      value: PROVIDER_BOUNDARY_MODE_RAW,
+    });
+  }
   log.info("Tool loop mode configured", {
     mode: TOOL_LOOP_MODE,
+    providerBoundary: PROVIDER_BOUNDARY.mode,
     proxyExecToolCalls: PROXY_EXECUTE_TOOL_CALLS,
   });
   await ensurePluginDirectory();
@@ -1176,14 +1194,16 @@ export const CursorPlugin: Plugin = async ({ $, directory, client, serverUrl }: 
     },
 
     async "chat.params"(input: any, output: any) {
-      if (input.model.providerID !== CURSOR_PROVIDER_ID) {
+      if (!PROVIDER_BOUNDARY.matchesProvider(input.model)) {
         return;
       }
 
-      // Always point to the actual proxy base URL (may be dynamically allocated).
-      output.options = output.options || {};
-      output.options.baseURL = proxyBaseURL || CURSOR_PROXY_DEFAULT_BASE_URL;
-      output.options.apiKey = output.options.apiKey || "cursor-agent";
+      PROVIDER_BOUNDARY.applyChatParamDefaults(
+        output,
+        proxyBaseURL,
+        CURSOR_PROXY_DEFAULT_BASE_URL,
+        "cursor-agent",
+      );
 
       // Tool definitions handling:
       // - proxy-exec mode: provider injects tool definitions directly.
