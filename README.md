@@ -92,26 +92,35 @@ Or if you'd rather do it by hand, add this to `~/.config/opencode/opencode.json`
       "options": { "baseURL": "http://127.0.0.1:32124/v1" },
       "models": {
         "auto": { "name": "Auto" },
+        "composer-1.5": { "name": "Composer 1.5" },
         "composer-1": { "name": "Composer 1" },
+        "gpt-5.3-codex": { "name": "GPT-5.3 Codex" },
+        "gpt-5.3-codex-low": { "name": "GPT-5.3 Codex Low" },
+        "gpt-5.3-codex-high": { "name": "GPT-5.3 Codex High" },
+        "gpt-5.3-codex-xhigh": { "name": "GPT-5.3 Codex Extra High" },
+        "gpt-5.3-codex-fast": { "name": "GPT-5.3 Codex Fast" },
+        "gpt-5.3-codex-low-fast": { "name": "GPT-5.3 Codex Low Fast" },
+        "gpt-5.3-codex-high-fast": { "name": "GPT-5.3 Codex High Fast" },
+        "gpt-5.3-codex-xhigh-fast": { "name": "GPT-5.3 Codex Extra High Fast" },
         "gpt-5.2": { "name": "GPT-5.2" },
-        "gpt-5.2-high": { "name": "GPT-5.2 High" },
         "gpt-5.2-codex": { "name": "GPT-5.2 Codex" },
-        "gpt-5.2-codex-low": { "name": "GPT-5.2 Codex Low" },
         "gpt-5.2-codex-high": { "name": "GPT-5.2 Codex High" },
+        "gpt-5.2-codex-low": { "name": "GPT-5.2 Codex Low" },
         "gpt-5.2-codex-xhigh": { "name": "GPT-5.2 Codex Extra High" },
         "gpt-5.2-codex-fast": { "name": "GPT-5.2 Codex Fast" },
-        "gpt-5.2-codex-low-fast": { "name": "GPT-5.2 Codex Low Fast" },
         "gpt-5.2-codex-high-fast": { "name": "GPT-5.2 Codex High Fast" },
+        "gpt-5.2-codex-low-fast": { "name": "GPT-5.2 Codex Low Fast" },
         "gpt-5.2-codex-xhigh-fast": { "name": "GPT-5.2 Codex Extra High Fast" },
-        "gpt-5.1-high": { "name": "GPT-5.1 High" },
         "gpt-5.1-codex-max": { "name": "GPT-5.1 Codex Max" },
         "gpt-5.1-codex-max-high": { "name": "GPT-5.1 Codex Max High" },
         "opus-4.6-thinking": { "name": "Claude 4.6 Opus (Thinking)" },
+        "sonnet-4.5-thinking": { "name": "Claude 4.5 Sonnet (Thinking)" },
+        "gpt-5.2-high": { "name": "GPT-5.2 High" },
         "opus-4.6": { "name": "Claude 4.6 Opus" },
         "opus-4.5": { "name": "Claude 4.5 Opus" },
         "opus-4.5-thinking": { "name": "Claude 4.5 Opus (Thinking)" },
         "sonnet-4.5": { "name": "Claude 4.5 Sonnet" },
-        "sonnet-4.5-thinking": { "name": "Claude 4.5 Sonnet (Thinking)" },
+        "gpt-5.1-high": { "name": "GPT-5.1 High" },
         "gemini-3-pro": { "name": "Gemini 3 Pro" },
         "gemini-3-flash": { "name": "Gemini 3 Flash" },
         "grok": { "name": "Grok" }
@@ -177,7 +186,7 @@ The proxy also exposes a `/v1/models` endpoint that fetches models in real-time:
 curl http://127.0.0.1:32124/v1/models
 ```
 
-Common models: `auto`, `sonnet-4.5`, `opus-4.6-thinking`, `opus-4.6`, `gpt-5.2`, `gemini-3-pro`, `grok`, `composer-1`
+Common models: `auto`, `composer-1.5`, `gpt-5.3-codex`, `opus-4.6-thinking`, `sonnet-4.5`, `gemini-3-pro`, `grok`
 
 ## Architecture
 
