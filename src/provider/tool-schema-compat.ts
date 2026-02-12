@@ -271,6 +271,19 @@ function normalizeBashCommand(value: unknown): string | null {
 
 function normalizeTodoStatus(status: string): string {
   const normalized = status.trim().toLowerCase().replace(/[\s-]+/g, "_");
+  if (normalized === "todo_status_pending") {
+    return "pending";
+  }
+  if (normalized === "todo_status_inprogress" || normalized === "todo_status_in_progress") {
+    return "in_progress";
+  }
+  if (
+    normalized === "todo_status_done"
+    || normalized === "todo_status_complete"
+    || normalized === "todo_status_completed"
+  ) {
+    return "completed";
+  }
   if (normalized === "todo" || normalized === "pending") {
     return "pending";
   }

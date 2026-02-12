@@ -82,12 +82,31 @@ export function createToolLoopGuard(
         const successFingerprint = `${toolCall.function.name}|values:${valueSignature}|success`;
         const repeatCount = (counts.get(successFingerprint) ?? 0) + 1;
         counts.set(successFingerprint, repeatCount);
+
+        // Some tools (notably edit/write) can get stuck in "successful" loops where
+        // the model keeps re-issuing the same operation with slightly different
+        // content (e.g. trailing newline differences). Track a coarse signature for
+        // these cases so we can still terminate noisy loops without blocking
+        // legitimate multi-step edits (which typically have non-empty old_string).
+        const coarseSuccessFingerprint = deriveSuccessCoarseFingerprint(
+          toolCall.function.name,
+          toolCall.function.arguments,
+        );
+        const coarseRepeatCount = coarseSuccessFingerprint
+          ? (coarseCounts.get(coarseSuccessFingerprint) ?? 0) + 1
+          : 0;
+        if (coarseSuccessFingerprint) {
+          coarseCounts.set(coarseSuccessFingerprint, coarseRepeatCount);
+        }
+        const coarseTriggered = coarseSuccessFingerprint
+          ? coarseRepeatCount > maxRepeat
+          : false;
         return {
-          fingerprint: successFingerprint,
-          repeatCount,
+          fingerprint: coarseTriggered ? coarseSuccessFingerprint! : successFingerprint,
+          repeatCount: coarseTriggered ? coarseRepeatCount : repeatCount,
           maxRepeat,
           errorClass,
-          triggered: repeatCount > maxRepeat,
+          triggered: repeatCount > maxRepeat || coarseTriggered,
           tracked: true,
         };
       }
@@ -297,6 +316,39 @@ function deriveArgumentValueSignature(rawArguments: string): string {
     return hashString(JSON.stringify(canonicalizeValue(parsed)));
   } catch {
     return `invalid:${hashString(rawArguments)}`;
+  }
+}
+
+function deriveSuccessCoarseFingerprint(toolName: string, rawArguments: string): string | null {
+  // Keep this intentionally conservative: only guard noisy success loops for tools
+  // that are commonly used for "create/overwrite file" operations.
+  const lowered = toolName.toLowerCase();
+  if (lowered !== "edit" && lowered !== "write") {
+    return null;
+  }
+
+  try {
+    const parsed = JSON.parse(rawArguments);
+    if (!isRecord(parsed)) {
+      return null;
+    }
+    const path = typeof parsed.path === "string" ? parsed.path : "";
+    if (!path) {
+      return null;
+    }
+
+    if (lowered === "edit") {
+      const oldString = typeof parsed.old_string === "string" ? parsed.old_string : null;
+      // Only treat "full file replace" edits as coarse-success tracked; multi-step
+      // edits with a non-empty old_string are common and should not be blocked.
+      if (oldString !== "") {
+        return null;
+      }
+    }
+
+    return `${toolName}|path:${hashString(path)}|success`;
+  } catch {
+    return null;
   }
 }
 

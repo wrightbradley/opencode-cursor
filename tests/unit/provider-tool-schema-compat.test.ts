@@ -250,6 +250,8 @@ describe("tool schema compatibility", () => {
               { content: "Book flights", status: "todo" },
               { content: "Reserve hotel", status: "in-progress", priority: "high" },
               { content: "Buy adapter", status: "done" },
+              { content: "Pack", status: "TODO_STATUS_IN_PROGRESS" },
+              { content: "Land", status: "TODO_STATUS_COMPLETED" },
             ],
           }),
         },
@@ -264,6 +266,10 @@ describe("tool schema compatibility", () => {
     expect(todos[1].priority).toBe("high");
     expect(todos[2].status).toBe("completed");
     expect(todos[2].priority).toBe("medium");
+    expect(todos[3].status).toBe("in_progress");
+    expect(todos[3].priority).toBe("medium");
+    expect(todos[4].status).toBe("completed");
+    expect(todos[4].priority).toBe("medium");
   });
 
   it("repairs edit content payloads into old/new string arguments", () => {

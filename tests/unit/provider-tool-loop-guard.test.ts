@@ -295,6 +295,78 @@ describe("tool loop guard", () => {
     expect(decision.repeatCount).toBe(2);
   });
 
+  it("stops repeated successful full-replace edits even when new_string varies", () => {
+    const guard = createToolLoopGuard(
+      [
+        {
+          role: "assistant",
+          content: null,
+          tool_calls: [
+            {
+              id: "prev-edit",
+              type: "function",
+              function: {
+                name: "edit",
+                arguments: JSON.stringify({
+                  path: "TODO.md",
+                  old_string: "",
+                  new_string: "seed",
+                }),
+              },
+            },
+          ],
+        },
+        {
+          role: "tool",
+          tool_call_id: "prev-edit",
+          content: "File edited successfully: TODO.md",
+        },
+      ],
+      3,
+    );
+
+    const d1 = guard.evaluate({
+      id: "e1",
+      type: "function",
+      function: {
+        name: "edit",
+        arguments: JSON.stringify({ path: "TODO.md", old_string: "", new_string: "a" }),
+      },
+    });
+    const d2 = guard.evaluate({
+      id: "e2",
+      type: "function",
+      function: {
+        name: "edit",
+        arguments: JSON.stringify({ path: "TODO.md", old_string: "", new_string: "b" }),
+      },
+    });
+    const d3 = guard.evaluate({
+      id: "e3",
+      type: "function",
+      function: {
+        name: "edit",
+        arguments: JSON.stringify({ path: "TODO.md", old_string: "", new_string: "c" }),
+      },
+    });
+    const d4 = guard.evaluate({
+      id: "e4",
+      type: "function",
+      function: {
+        name: "edit",
+        arguments: JSON.stringify({ path: "TODO.md", old_string: "", new_string: "d" }),
+      },
+    });
+
+    expect(d1.errorClass).toBe("success");
+    expect(d1.triggered).toBe(false);
+    expect(d2.triggered).toBe(false);
+    expect(d3.triggered).toBe(false);
+    expect(d4.triggered).toBe(true);
+    expect(d4.fingerprint.includes("|path:")).toBe(true);
+    expect(d4.fingerprint.endsWith("|success")).toBe(true);
+  });
+
   it("resets fingerprint counts", () => {
     const guard = createToolLoopGuard(
       [
