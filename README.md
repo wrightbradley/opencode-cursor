@@ -213,7 +213,7 @@ flowchart TB
 Default mode is `CURSOR_ACP_TOOL_LOOP_MODE=opencode`: OpenCode owns tool execution, while cursor-acp intercepts and translates `cursor-agent` tool calls into OpenAI-compatible `tool_calls` responses.  
 Legacy execution mode (`proxy-exec`) is still available for local/SDK/MCP execution through the internal router.
 
-Detailed architecture: `docs/architecture/runtime-tool-loop.md`.
+Detailed architecture: [docs/architecture/runtime-tool-loop.md](docs/architecture/runtime-tool-loop.md).
 
 ## Alternatives
 
