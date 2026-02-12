@@ -29,6 +29,142 @@ export function getBrandingHeader(): string {
   return BRANDING_HEADER.trim();
 }
 
+type CheckResult = {
+  name: string;
+  passed: boolean;
+  message: string;
+  warning?: boolean;
+};
+
+export function checkBun(): CheckResult {
+  try {
+    const version = execFileSync("bun", ["--version"], { encoding: "utf8" }).trim();
+    return { name: "bun", passed: true, message: `v${version}` };
+  } catch {
+    return {
+      name: "bun",
+      passed: false,
+      message: "not found - install with: curl -fsSL https://bun.sh/install | bash",
+    };
+  }
+}
+
+export function checkCursorAgent(): CheckResult {
+  try {
+    const output = execFileSync("cursor-agent", ["--version"], { encoding: "utf8" }).trim();
+    const version = output.split("\n")[0] || "installed";
+    return { name: "cursor-agent", passed: true, message: version };
+  } catch {
+    return {
+      name: "cursor-agent",
+      passed: false,
+      message: "not found - install with: curl -fsS https://cursor.com/install | bash",
+    };
+  }
+}
+
+export function checkCursorAgentLogin(): CheckResult {
+  try {
+    // cursor-agent stores credentials in ~/.cursor-agent or similar
+    // Try running a command that requires auth
+    execFileSync("cursor-agent", ["models"], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+    return { name: "cursor-agent login", passed: true, message: "logged in" };
+  } catch {
+    return {
+      name: "cursor-agent login",
+      passed: false,
+      message: "not logged in - run: cursor-agent login",
+      warning: true,
+    };
+  }
+}
+
+function checkOpenCode(): CheckResult {
+  try {
+    const version = execFileSync("opencode", ["--version"], { encoding: "utf8" }).trim();
+    return { name: "OpenCode", passed: true, message: version };
+  } catch {
+    return {
+      name: "OpenCode",
+      passed: false,
+      message: "not found - install with: curl -fsSL https://opencode.ai/install | bash",
+    };
+  }
+}
+
+function checkPluginFile(pluginPath: string): CheckResult {
+  try {
+    if (!existsSync(pluginPath)) {
+      return {
+        name: "Plugin file",
+        passed: false,
+        message: "not found - run: open-cursor install",
+      };
+    }
+    const stat = lstatSync(pluginPath);
+    if (stat.isSymbolicLink()) {
+      const target = readFileSync(pluginPath, "utf8");
+      return { name: "Plugin file", passed: true, message: `symlink → ${target}` };
+    }
+    return { name: "Plugin file", passed: true, message: "file (copy)" };
+  } catch {
+    return {
+      name: "Plugin file",
+      passed: false,
+      message: "error reading plugin file",
+    };
+  }
+}
+
+function checkProviderConfig(configPath: string): CheckResult {
+  try {
+    if (!existsSync(configPath)) {
+      return {
+        name: "Provider config",
+        passed: false,
+        message: "config not found - run: open-cursor install",
+      };
+    }
+    const config = readConfig(configPath);
+    const provider = config.provider?.["cursor-acp"];
+    if (!provider) {
+      return {
+        name: "Provider config",
+        passed: false,
+        message: "cursor-acp provider missing - run: open-cursor install",
+      };
+    }
+    const modelCount = Object.keys(provider.models || {}).length;
+    return { name: "Provider config", passed: true, message: `${modelCount} models` };
+  } catch {
+    return {
+      name: "Provider config",
+      passed: false,
+      message: "error reading config",
+    };
+  }
+}
+
+function checkAiSdk(opencodeDir: string): CheckResult {
+  try {
+    const sdkPath = join(opencodeDir, "node_modules", "@ai-sdk", "openai-compatible");
+    if (existsSync(sdkPath)) {
+      return { name: "AI SDK", passed: true, message: "@ai-sdk/openai-compatible installed" };
+    }
+    return {
+      name: "AI SDK",
+      passed: false,
+      message: "not installed - run: open-cursor install",
+    };
+  } catch {
+    return {
+      name: "AI SDK",
+      passed: false,
+      message: "error checking AI SDK",
+    };
+  }
+}
+
 type Command = "install" | "sync-models" | "uninstall" | "status" | "doctor" | "help";
 
 type Options = {

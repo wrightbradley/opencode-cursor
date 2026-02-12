@@ -1,6 +1,11 @@
 // tests/unit/cli/opencode-cursor.test.ts
 import { describe, expect, it } from "bun:test";
-import { getBrandingHeader } from "../../../src/cli/opencode-cursor.js";
+import {
+  getBrandingHeader,
+  checkBun,
+  checkCursorAgent,
+  checkCursorAgentLogin,
+} from "../../../src/cli/opencode-cursor.js";
 
 describe("cli/opencode-cursor branding", () => {
   it("returns ASCII art header with correct format", () => {
@@ -11,5 +16,26 @@ describe("cli/opencode-cursor branding", () => {
     expect(lines.length).toBeGreaterThanOrEqual(3);
     // Verify it contains ASCII block characters
     expect(header).toMatch(/[▄██▀]/);
+  });
+});
+
+describe("cli/opencode-cursor doctor checks", () => {
+  it("checkBun returns status object", () => {
+    const result = checkBun();
+    expect(result.name).toBe("bun");
+    expect(typeof result.passed).toBe("boolean");
+    expect(typeof result.message).toBe("string");
+  });
+
+  it("checkCursorAgent returns status object", () => {
+    const result = checkCursorAgent();
+    expect(result.name).toBe("cursor-agent");
+    expect(typeof result.passed).toBe("boolean");
+  });
+
+  it("checkCursorAgentLogin returns status object", () => {
+    const result = checkCursorAgentLogin();
+    expect(result.name).toBe("cursor-agent login");
+    expect(typeof result.passed).toBe("boolean");
   });
 });
