@@ -16,6 +16,8 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 )
 
+const npmPackage = "@rama_nigg/open-cursor"
+
 func parseCursorModelsOutput(clean string) (map[string]interface{}, error) {
 	// More permissive regex: allows uppercase, underscores, and various separators
 	// Pattern: model-id followed by separator and display name
@@ -113,7 +115,7 @@ func (m model) startInstallation() (tea.Model, tea.Cmd) {
 
 	m.tasks = []installTask{
 		{name: "Check prerequisites", description: "Verifying bun and cursor-agent", execute: checkPrerequisites, status: statusPending},
-		{name: "Build plugin", description: "Running bun install && bun run build", execute: buildPlugin, status: statusPending},
+		{name: "Install plugin", description: "npm (preferred) or bun build fallback", execute: buildPlugin, status: statusPending},
 		{name: "Install AI SDK", description: "Adding @ai-sdk/openai-compatible to opencode", execute: installAiSdk, status: statusPending},
 		{name: "Create symlink", description: "Linking to OpenCode plugin directory", execute: createSymlink, status: statusPending},
 		{name: "Update config", description: "Adding cursor-acp plugin to opencode.json", execute: updateConfig, status: statusPending},
@@ -158,6 +160,27 @@ func checkPrerequisites(m *model) error {
 }
 
 func buildPlugin(m *model) error {
+	// Prefer npm-installed package when available; fall back to local build.
+	if commandExists("npm") {
+		installCmd := exec.Command("npm", "install", "-g", fmt.Sprintf("%s@%s", npmPackage, m.npmTag))
+		if err := runCommand(fmt.Sprintf("npm install -g %s@%s", npmPackage, m.npmTag), installCmd, m.logFile); err == nil {
+			rootCmd := exec.Command("npm", "root", "-g")
+			rootOut, rootErr := rootCmd.Output()
+			if rootErr == nil {
+				root := strings.TrimSpace(string(rootOut))
+				entry := filepath.Join(root, "@rama_nigg", "open-cursor", "dist", "plugin-entry.js")
+				if info, err := os.Stat(entry); err == nil && info.Size() > 0 {
+					m.pluginEntry = entry
+					return nil
+				}
+			}
+		}
+		// If npm install failed, continue to bun fallback; log only in debug mode.
+		if m.debugMode && m.logFile != nil {
+			m.logFile.WriteString("npm install @rama_nigg/open-cursor failed or plugin entry not found; falling back to bun build\n")
+		}
+	}
+
 	// Run bun install
 	installCmd := exec.Command("bun", "install")
 	installCmd.Dir = m.projectDir
@@ -194,6 +217,7 @@ func buildPlugin(m *model) error {
 		return fmt.Errorf("dist/plugin-entry.js not found or empty after build")
 	}
 
+	m.pluginEntry = distPath
 	return nil
 }
 
@@ -260,9 +284,12 @@ func createSymlink(m *model) error {
 		os.Remove(symlinkPath)
 	}
 
-	// Create symlink to built plugin entry
-	distPath := filepath.Join(m.projectDir, "dist", "plugin-entry.js")
-	if err := os.Symlink(distPath, symlinkPath); err != nil {
+	// Create symlink to plugin entry (npm path preferred, fallback to local dist)
+	entry := m.pluginEntry
+	if entry == "" {
+		entry = filepath.Join(m.projectDir, "dist", "plugin-entry.js")
+	}
+	if err := os.Symlink(entry, symlinkPath); err != nil {
 		return fmt.Errorf("failed to create symlink: %w", err)
 	}
 
@@ -407,7 +434,10 @@ func validateConfig(m *model) error {
 
 func verifyPlugin(m *model) error {
 	// Try to load plugin with node to catch syntax/import errors
-	pluginPath := filepath.Join(m.projectDir, "dist", "plugin-entry.js")
+	pluginPath := m.pluginEntry
+	if pluginPath == "" {
+		pluginPath = filepath.Join(m.projectDir, "dist", "plugin-entry.js")
+	}
 	cmd := exec.Command("node", "-e", fmt.Sprintf(`require("%s")`, pluginPath))
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("plugin failed to load: %w", err)

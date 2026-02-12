@@ -80,10 +80,12 @@ type model struct {
 
 	// Installation paths
 	projectDir    string
+	pluginEntry   string
 	pluginDir     string
 	configPath    string
 	existingSetup bool
 	isUninstall   bool
+	npmTag        string
 
 	// Context for cancellation
 	ctx    context.Context

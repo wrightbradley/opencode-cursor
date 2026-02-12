@@ -24,6 +24,10 @@ func newModel(debugMode, noRollback bool, logFile *os.File) model {
 	configDir, _ := getConfigDir()
 	projectDir := getProjectDir()
 	existingSetup, configPath := detectExistingSetup()
+	npmTag := os.Getenv("CURSOR_ACP_NPM_TAG")
+	if npmTag == "" {
+		npmTag = "latest"
+	}
 
 	m := model{
 		step:          stepWelcome,
@@ -37,10 +41,12 @@ func newModel(debugMode, noRollback bool, logFile *os.File) model {
 		ctx:           ctx,
 		cancel:        cancel,
 		projectDir:    projectDir,
+		pluginEntry:   "",
 		pluginDir:     filepath.Join(configDir, "opencode", "plugin"),
 		configPath:    configPath,
 		existingSetup: existingSetup,
 		backupFiles:   make(map[string][]byte),
+		npmTag:        npmTag,
 
 		beams:  nil,
 		ticker: NewTypewriterTicker(),

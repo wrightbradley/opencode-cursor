@@ -13,15 +13,25 @@
 - Updated loop guard to treat unknown outputs from output-heavy tools (notably `bash`) as success-class for loop accounting.
 
 ## Remaining Gaps
-- Production runs can still loop on repeated successful tool calls due model behavior (guard stops it, but UX can still be noisy).
-- `glob` behavior in full OpenCode sessions can diverge from local executor behavior due duplicate `glob` providers in the registry.
-- We still rely heavily on model self-correction for choosing the "best" tool (`bash` vs filesystem-native).
+- Repeated successful `edit/write` calls still happen in real `opencode` runs under `auto`; loop guard prevents runaway but UX is noisy.
+- MCP discovery/registration is skipped in `opencode` mode (only active in `proxy-exec`), so MCP tools are effectively unavailable there.
+- Skills (`skill`, `skill_mcp`, `task`, `call_omo_agent`) lack end-to-end validation in `opencode` mode; permissions/doom_loop interactions untested.
+- `glob`/`rm`/`mkdir` can conflict with OpenCode-native implementations when both are registered; no preference policy.
 
-## Distance To “Consistent Tooling”
-- For core file/shell tools: **~75-85% stable**.
-- For broader OpenCode-native workflows (`skills`, `MCP`, `session_*`, `lsp_*`): **integration exists but reliability/observability work is still pending**.
+## Distance To “Seamless Cursor-on-OpenCode”
+- Core file/shell tools: ~80% (loops and duplicate-provider edge cases remain).
+- Skills/MCP/sub-agents: ~40% (plumbing exists; discovery and E2E reliability missing in `opencode` mode).
 
-## Next Critical Work
-1. Add tool-provider preference policy (prefer `cursor-acp` implementation for `glob`/`rm`/`mkdir` when duplicates exist).
-2. Add structured telemetry per tool call: requested name, aliased name, executor selected, outcome.
-3. Build explicit smoke matrix for `skills` + `skill_mcp` + representative MCP tools.
+## Plan To Close Gaps
+1) Tool loop stability
+   - Add live regression test fixture for `write/edit` in `opencode` mode with `auto` to ensure guard stops after N and emits clear hint.
+   - Add telemetry fields (tool name, alias resolution, executor, error class) to debug logs for real runs.
+2) MCP enablement in `opencode`
+   - Add a toggle to allow MCP discovery/registration even when `TOOL_LOOP_MODE=opencode` (default off), plus one live smoke test against a mock MCP server.
+3) Skills/sub-agent validation
+   - Add E2E smoke cases invoking `skill`, `skill_mcp`, and `task` with superpowers skills installed; assert tool_call emission and single-turn completion.
+   - Exercise doom_loop/permission handling in those flows.
+4) Provider preference
+   - Implement preference policy so `cursor-acp` versions of `glob`/`rm`/`mkdir` win when duplicates are present, with a metrics flag to observe conflicts.
+5) Installer + publish hygiene
+   - Prefer npm package `@rama_nigg/open-cursor` in both Go and shell installers; allow tag override (default `latest`, optional `beta`) and surface installed vs latest version.
