@@ -1,4 +1,5 @@
 import { execSync } from "node:child_process";
+import { createServer } from "node:net";
 import { platform } from "node:os";
 import type { ProxyConfig, ProxyServer } from "./types.js";
 import { createLogger } from "../utils/logger.js";
@@ -7,6 +8,23 @@ const log = createLogger("proxy-server");
 
 const DEFAULT_PORT = 32124;
 const PORT_RANGE_SIZE = 256;
+
+async function isPortAvailable(port: number, host: string): Promise<boolean> {
+  return await new Promise<boolean>((resolve) => {
+    const server = createServer();
+    server.unref();
+
+    server.once("error", () => {
+      resolve(false);
+    });
+
+    server.listen({ port, host }, () => {
+      server.close(() => {
+        resolve(true);
+      });
+    });
+  });
+}
 
 /**
  * Returns the set of ports in [minPort, maxPort) that are currently in use (listening).
@@ -60,12 +78,23 @@ function getUsedPortsInRange(minPort: number, maxPort: number): Set<number> {
  * Uses platform-specific tools (ss on Linux, lsof on macOS) to check used ports.
  * On unsupported platforms, returns DEFAULT_PORT and relies on tryStart fallback.
  */
-export async function findAvailablePort(): Promise<number> {
+export async function findAvailablePort(host = "127.0.0.1"): Promise<number> {
   const minPort = DEFAULT_PORT;
   const maxPort = DEFAULT_PORT + PORT_RANGE_SIZE;
   const used = getUsedPortsInRange(minPort, maxPort);
   for (let p = minPort; p < maxPort; p++) {
-    if (!used.has(p)) return p;
+    if (used.has(p)) continue;
+    if (await isPortAvailable(p, host)) {
+      return p;
+    }
+  }
+
+  // Port listing can be incomplete in sandboxed environments; fall back to probing
+  // ports we believe are "used" as well.
+  for (let p = minPort; p < maxPort; p++) {
+    if (await isPortAvailable(p, host)) {
+      return p;
+    }
   }
   throw new Error(`No available port in range ${minPort}-${maxPort - 1}`);
 }
@@ -133,7 +162,7 @@ export function createProxyServer(config: ProxyConfig): ProxyServer {
           log.debug(
             `Requested port ${requestedPort} unavailable: ${result.error?.message ?? "unknown"}. Falling back to automatic port selection.`
           );
-          port = await findAvailablePort();
+          port = await findAvailablePort(host);
           const fallbackResult = tryStart(port);
           if (!fallbackResult.success) {
             throw new Error(
@@ -144,7 +173,7 @@ export function createProxyServer(config: ProxyConfig): ProxyServer {
           log.debug(`Server started on fallback port ${port} instead of requested port ${requestedPort}`);
         }
       } else {
-        port = await findAvailablePort();
+        port = await findAvailablePort(host);
         const result = tryStart(port);
         if (!result.success) {
           throw new Error(`Failed to start server on port ${port}: ${result.error?.message ?? "unknown"}`);

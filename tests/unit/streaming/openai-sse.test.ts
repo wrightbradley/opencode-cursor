@@ -76,7 +76,7 @@ describe("openai-sse", () => {
       },
     });
 
-    expect(parseChunk(chunk[0]).choices[0].delta.content).toBe("Plan");
+    expect(parseChunk(chunk[0]).choices[0].delta.reasoning_content).toBe("Plan");
   });
 
   it("emits thinking deltas from real thinking events", () => {
@@ -92,7 +92,7 @@ describe("openai-sse", () => {
       session_id: "test",
     });
 
-    expect(parseChunk(first[0]).choices[0].delta.content).toBe("Analyzing");
+    expect(parseChunk(first[0]).choices[0].delta.reasoning_content).toBe("Analyzing");
 
     const second = converter.handleEvent({
       type: "thinking",
@@ -101,6 +101,6 @@ describe("openai-sse", () => {
       session_id: "test",
     });
 
-    expect(parseChunk(second[0]).choices[0].delta.content).toBe(" the problem");
+    expect(parseChunk(second[0]).choices[0].delta.reasoning_content).toBe(" the problem");
   });
 });

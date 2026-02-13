@@ -70,10 +70,6 @@ export class StreamToSseConverter {
 
   handleEvent(event: StreamJsonEvent): string[] {
     if (isAssistantText(event)) {
-      const hasPartialTimestamp = typeof (event as any).timestamp_ms === "number";
-      if (!hasPartialTimestamp) {
-        return [];
-      }
       const delta = this.tracker.nextText(extractText(event));
       return delta ? [this.chunkWith({ content: delta })] : [];
     }

@@ -84,6 +84,7 @@ export function createToolLoopGuard(
         const successFingerprint = `${toolCall.function.name}|values:${valueSignature}|success`;
         const repeatCount = (counts.get(successFingerprint) ?? 0) + 1;
         counts.set(successFingerprint, repeatCount);
+        const strictTriggered = repeatCount > maxRepeat;
 
         // Some tools (notably edit/write) can get stuck in "successful" loops where
         // the model keeps re-issuing the same operation with slightly different
@@ -100,15 +101,19 @@ export function createToolLoopGuard(
         if (coarseSuccessFingerprint) {
           coarseCounts.set(coarseSuccessFingerprint, coarseRepeatCount);
         }
+        // Coarse fingerprints are intentionally less specific; give them a slightly
+        // higher threshold to reduce false positives.
+        const coarseMaxRepeat = maxRepeat + 1;
         const coarseTriggered = coarseSuccessFingerprint
-          ? coarseRepeatCount > maxRepeat
+          ? coarseRepeatCount > coarseMaxRepeat
           : false;
+        const preferCoarseFingerprint = coarseTriggered && !strictTriggered;
         return {
-          fingerprint: coarseTriggered ? coarseSuccessFingerprint! : successFingerprint,
-          repeatCount: coarseTriggered ? coarseRepeatCount : repeatCount,
-          maxRepeat,
+          fingerprint: preferCoarseFingerprint ? coarseSuccessFingerprint! : successFingerprint,
+          repeatCount: preferCoarseFingerprint ? coarseRepeatCount : repeatCount,
+          maxRepeat: preferCoarseFingerprint ? coarseMaxRepeat : maxRepeat,
           errorClass,
-          triggered: repeatCount > maxRepeat || coarseTriggered,
+          triggered: strictTriggered || coarseTriggered,
           tracked: true,
         };
       }
@@ -229,6 +234,7 @@ function indexToolLoopHistory(messages: Array<unknown>): {
       call.name,
       byCallId.get(call.id) ?? latestByToolName.get(call.name) ?? latest ?? "unknown",
     );
+
     if (errorClass === "success") {
       incrementCount(
         initialCounts,
@@ -255,7 +261,6 @@ function indexToolLoopHistory(messages: Array<unknown>): {
     const coarseFingerprint = `${call.name}|${errorClass}`;
     incrementCount(initialCounts, strictFingerprint);
     incrementCount(initialCoarseCounts, coarseFingerprint);
-
     if (!schemaSignature) {
       continue;
     }

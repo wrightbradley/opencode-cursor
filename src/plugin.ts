@@ -50,7 +50,10 @@ import {
 const log = createLogger("plugin");
 
 export async function ensurePluginDirectory(): Promise<void> {
-  const pluginDir = join(homedir(), ".config", "opencode", "plugin");
+  const configHome = process.env.XDG_CONFIG_HOME
+    ? resolve(process.env.XDG_CONFIG_HOME)
+    : join(homedir(), ".config");
+  const pluginDir = join(configHome, "opencode", "plugin");
   try {
     await mkdir(pluginDir, { recursive: true });
     log.debug("Plugin directory ensured", { path: pluginDir });
