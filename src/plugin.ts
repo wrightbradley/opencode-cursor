@@ -405,7 +405,7 @@ async function findFirstAllowedToolCallInOutput(
     if (result.terminate) {
       return {
         toolCall: null,
-        terminationMessage: result.terminate.message,
+        terminationMessage: result.terminate.silent ? null : result.terminate.message,
       };
     }
     if (result.intercepted && interceptedToolCall) {
@@ -733,7 +733,14 @@ async function ensureCursorProxyServer(workspaceDirectory: string, toolRouter?: 
                     },
                   });
                   if (result.terminate) {
-                    emitTerminalAssistantErrorAndTerminate(result.terminate.message);
+                    if (!result.terminate.silent) {
+                      emitTerminalAssistantErrorAndTerminate(result.terminate.message);
+                    } else {
+                      // Silent termination: just end the stream without an error message
+                      controller.enqueue(encoder.encode(formatSseDone()));
+                      streamTerminated = true;
+                      try { child.kill(); } catch { /* ignore */ }
+                    }
                     break;
                   }
                   if (result.intercepted) {
@@ -790,7 +797,13 @@ async function ensureCursorProxyServer(workspaceDirectory: string, toolRouter?: 
                   },
                 });
                 if (result.terminate) {
-                  emitTerminalAssistantErrorAndTerminate(result.terminate.message);
+                  if (!result.terminate.silent) {
+                    emitTerminalAssistantErrorAndTerminate(result.terminate.message);
+                  } else {
+                    controller.enqueue(encoder.encode(formatSseDone()));
+                    streamTerminated = true;
+                    try { child.kill(); } catch { /* ignore */ }
+                  }
                   break;
                 }
                 if (result.intercepted) {
@@ -1184,7 +1197,13 @@ async function ensureCursorProxyServer(workspaceDirectory: string, toolRouter?: 
                 },
               });
               if (result.terminate) {
-                emitTerminalAssistantErrorAndTerminate(result.terminate.message);
+                if (!result.terminate.silent) {
+                  emitTerminalAssistantErrorAndTerminate(result.terminate.message);
+                } else {
+                  // Silent termination: just end the stream without an error message
+                  streamTerminated = true;
+                  try { child.kill(); } catch { /* ignore */ }
+                }
                 break;
               }
               if (result.intercepted) {
@@ -1248,7 +1267,13 @@ async function ensureCursorProxyServer(workspaceDirectory: string, toolRouter?: 
                 },
               });
               if (result.terminate) {
-                emitTerminalAssistantErrorAndTerminate(result.terminate.message);
+                if (!result.terminate.silent) {
+                  emitTerminalAssistantErrorAndTerminate(result.terminate.message);
+                } else {
+                  // Silent termination: just end the stream without an error message
+                  streamTerminated = true;
+                  try { child.kill(); } catch { /* ignore */ }
+                }
                 break;
               }
               if (result.intercepted) {
@@ -1549,7 +1574,7 @@ function buildToolHookEntries(registry: CoreRegistry, fallbackBaseDir?: string):
             );
             return await handler(normalizedArgs);
           } catch (error: any) {
-            log.warn("Tool hook execution failed", { tool: toolName, error: String(error?.message || error) });
+            log.debug("Tool hook execution failed", { tool: toolName, error: String(error?.message || error) });
             throw error;
           }
         },
